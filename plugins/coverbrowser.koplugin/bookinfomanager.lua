@@ -476,7 +476,9 @@ function BookInfoManager:extractBookInfo(filepath, cover_specs)
     if document then
         local pages
         if document.loadDocument then -- needed for crengine
-            if not document:loadDocument(false) then -- load only metadata
+            if document:loadDocument() then
++                document:render()
++            else
                 -- failed loading, calling other methods would segfault
                 loaded = false
             end
@@ -490,8 +492,8 @@ function BookInfoManager:extractBookInfo(filepath, cover_specs)
             -- for all others than crengine, we seem to get an accurate nb of pages
             pages = document:getPageCount()
         end
-        if loaded then
-            dbrow.pages = pages
+        if loaded then            
+            dbrow.pages = document:getPageCount() --dbrow.pages = pages
             local props = document:getProps()
             if next(props) then -- there's at least one item
                 dbrow.has_meta = 'Y'
