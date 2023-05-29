@@ -477,8 +477,8 @@ function BookInfoManager:extractBookInfo(filepath, cover_specs)
         local pages
         if document.loadDocument then -- needed for crengine
             if document:loadDocument() then
-+                document:render()
-+            else
+                document:render()
+            else
                 -- failed loading, calling other methods would segfault
                 loaded = false
             end
