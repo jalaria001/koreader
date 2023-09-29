@@ -147,9 +147,9 @@ function SonyPRSTUX:initNetworkManager(NetworkMgr)
        end
     end
 
-    function NetworkMgr:turnOnWifi(complete_callback)
+    function NetworkMgr:turnOnWifi(complete_callback, interactive)
        os.execute("./set-wifi.sh on")
-       self:reconnectOrShowNetworkMenu(complete_callback)
+       return self:reconnectOrShowNetworkMenu(complete_callback, interactive)
     end
 
     function NetworkMgr:getNetworkInterfaceName()
@@ -166,10 +166,6 @@ function SonyPRSTUX:initNetworkManager(NetworkMgr)
     function NetworkMgr:releaseIP()
         logger.info("killing dhclient")
         os.execute("dhclient -x wlan0")
-    end
-
-    function NetworkMgr:restoreWifiAsync()
-        -- os.execute("./restore-wifi-async.sh")
     end
 
     --[[

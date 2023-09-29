@@ -35,6 +35,7 @@ local Event = require("ui/event")
 local Notification = require("ui/widget/notification")
 local ReaderHighlight = require("apps/reader/modules/readerhighlight")
 local ReaderZooming = require("apps/reader/modules/readerzooming")
+local Screen = Device.screen
 local UIManager = require("ui/uimanager")
 local util = require("util")
 local _ = require("gettext")
@@ -72,7 +73,11 @@ local settingsList = {
     poweroff = {category="none", event="RequestPowerOff", title=_("Power off"), device=true, condition=Device:canPowerOff(), separator=true},
 
     toggle_hold_corners = {category="none", event="IgnoreHoldCorners", title=_("Toggle hold corners"), device=true},
+    touch_input_on = {category="none", event="IgnoreTouchInput", arg=false, title=_("Enable touch input"), device=true},
+    touch_input_off = {category="none", event="IgnoreTouchInput", arg=true, title=_("Disable touch input"), device=true},
     toggle_touch_input = {category="none", event="IgnoreTouchInput", title=_("Toggle touch input"), device=true, separator=true},
+    swap_page_turn_buttons = {category="none", event="SwapPageTurnButtons", title=_("Invert page turn buttons"), device=true, condition=Device:hasKeys(), separator=true},
+    toggle_key_repeat = {category="none", event="ToggleKeyRepeat", title=_("Toggle key repeat"), device=true, condition=Device:hasKeys() and Device:canKeyRepeat(), separator=true},
     toggle_gsensor = {category="none", event="ToggleGSensor", title=_("Toggle accelerometer"), device=true, condition=Device:hasGSensor()},
     toggle_rotation = {category="none", event="SwapRotation", title=_("Toggle orientation"), device=true},
     invert_rotation = {category="none", event="InvertRotation", title=_("Invert rotation"), device=true},
@@ -130,8 +135,10 @@ local settingsList = {
     skim = {category="none", event="ShowSkimtoDialog", title=_("Skim document"), reader=true},
     prev_bookmark = {category="none", event="GotoPreviousBookmarkFromPage", title=_("Previous bookmark"), reader=true},
     next_bookmark = {category="none", event="GotoNextBookmarkFromPage", title=_("Next bookmark"), reader=true},
-    latest_bookmark = {category="none", event="GoToLatestBookmark", title=_("Go to latest bookmark"), reader=true},
-    back = {category="none", event="Back", title=_("Back"), reader=true},
+    first_bookmark = {category="none", event="GotoFirstBookmark", title=_("First bookmark"), reader=true},
+    last_bookmark = {category="none", event="GotoLastBookmark", title=_("Last bookmark"), reader=true},
+    latest_bookmark = {category="none", event="GoToLatestBookmark", title=_("Latest bookmark"), reader=true, separator=true},
+    back = {category="none", event="Back", title=_("Back"), filemanager=true, reader=true},
     previous_location = {category="none", event="GoBackLink", arg=true, title=_("Back to previous location"), reader=true},
     next_location = {category="none", event="GoForwardLink", arg=true, title=_("Forward to next location"), reader=true},
     follow_nearest_link = {category="arg", event="GoToPageLink", arg={pos={x=0,y=0}}, title=_("Follow nearest link"), reader=true},
@@ -141,6 +148,7 @@ local settingsList = {
 
     toc = {category="none", event="ShowToc", title=_("Table of contents"), reader=true},
     book_map = {category="none", event="ShowBookMap", title=_("Book map"), reader=true, condition=Device:isTouchDevice()},
+    book_map_overview = {category="none", event="ShowBookMap", arg=true, title=_("Book map (overview)"), reader=true, condition=Device:isTouchDevice()},
     page_browser = {category="none", event="ShowPageBrowser", title=_("Page browser"), reader=true, condition=Device:isTouchDevice()},
     bookmarks = {category="none", event="ShowBookmark", title=_("Bookmarks"), reader=true},
     bookmark_search = {category="none", event="SearchBookmark", title=_("Bookmark search"), reader=true},
@@ -170,7 +178,6 @@ local settingsList = {
     --
 
     toggle_inverse_reading_order = {category="none", event="ToggleReadingOrder", title=_("Toggle page turn direction"), reader=true, separator=true},
-    swap_page_turn_buttons = {category="none", event="SwapPageTurnButtons", title=_("Invert page turn buttons"), reader=true, condition=Device:hasKeys(), separator=true},
     set_highlight_action = {category="string", event="SetHighlightAction", title=_("Set highlight action"), args_func=ReaderHighlight.getHighlightActions, reader=true},
     cycle_highlight_action = {category="none", event="CycleHighlightAction", title=_("Cycle highlight action"), reader=true},
     cycle_highlight_style = {category="none", event="CycleHighlightStyle", title=_("Cycle highlight style"), reader=true, separator=true},
@@ -221,7 +228,7 @@ local settingsList = {
     kopt_font_fine_tune = {category="string", paging=true},
     kopt_word_spacing = {category="configurable", paging=true},
     kopt_text_wrap = {category="string", paging=true},
-    kopt_contrast = {category="absolutenumber", paging=true},
+    kopt_contrast = {category="string", paging=true},
     kopt_page_opt = {category="configurable", paging=true},
     kopt_hw_dithering = {category="configurable", paging=true, condition=Device:hasEinkScreen() and Device:canHWDither()},
     kopt_sw_dithering = {category="configurable", paging=true, condition=Device:hasEinkScreen() and not Device:canHWDither() and Device.screen.fb_bpp == 8},
@@ -263,7 +270,11 @@ local dispatcher_menu_order = {
     "poweroff",
 
     "toggle_hold_corners",
+    "touch_input_on",
+    "touch_input_off",
     "toggle_touch_input",
+    "swap_page_turn_buttons",
+    "toggle_key_repeat",
     "toggle_gsensor",
     "rotation_mode",
     "toggle_rotation",
@@ -322,6 +333,8 @@ local dispatcher_menu_order = {
     "skim",
     "prev_bookmark",
     "next_bookmark",
+    "first_bookmark",
+    "last_bookmark",
     "latest_bookmark",
     "back",
     "previous_location",
@@ -333,6 +346,7 @@ local dispatcher_menu_order = {
 
     "toc",
     "book_map",
+    "book_map_overview",
     "page_browser",
     "bookmarks",
     "bookmark_search",
@@ -361,7 +375,6 @@ local dispatcher_menu_order = {
     "toggle_bookmark_flipping",
     "toggle_reflow",
     "toggle_inverse_reading_order",
-    "swap_page_turn_buttons",
     "zoom",
     "zoom_factor_change",
     "set_highlight_action",
@@ -577,6 +590,12 @@ function Dispatcher:getNameFromItem(item, settings, dont_show_value)
     return title
 end
 
+-- Converts copt/kopt-options values to args.
+function Dispatcher:getArgFromValue(item, value)
+    local value_num = util.arrayContains(settingsList[item].configurable.values, value)
+    return settingsList[item].args[value_num]
+end
+
 -- Add the item to the end of the execution order.
 -- If item or the order is nil all items will be added.
 function Dispatcher:_addToOrder(location, settings, item)
@@ -667,7 +686,7 @@ function Dispatcher:_sortActions(caller, location, settings, touchmenu_instance)
                     location[settings].settings.order[i] = v.key
                 end
             end
-            if touchmenu_instance then  touchmenu_instance:updateItems() end
+            if touchmenu_instance then touchmenu_instance:updateItems() end
             caller.updated = true
         end
     }
@@ -923,6 +942,26 @@ function Dispatcher:addSubMenu(caller, menu, location, settings)
     end
     menu[#menu].separator = true
     table.insert(menu, {
+        text = _("Sort"),
+        checked_func = function()
+            return location[settings] ~= nil
+            and location[settings].settings ~= nil
+            and location[settings].settings.order ~= nil
+        end,
+        callback = function(touchmenu_instance)
+            Dispatcher:_sortActions(caller, location, settings, touchmenu_instance)
+        end,
+        hold_callback = function(touchmenu_instance)
+            if location[settings]
+            and location[settings].settings
+            and location[settings].settings.order then
+                Dispatcher:_removeFromOrder(location, settings)
+                caller.updated = true
+                if touchmenu_instance then touchmenu_instance:updateItems() end
+            end
+        end,
+    })
+    table.insert(menu, {
         text = _("Show as QuickMenu"),
         checked_func = function()
             return location[settings] ~= nil
@@ -947,35 +986,44 @@ function Dispatcher:addSubMenu(caller, menu, location, settings)
             end
         end,
     })
-    table.insert(menu, {
-        text = _("Sort"),
-        checked_func = function()
-            return location[settings] ~= nil
-            and location[settings].settings ~= nil
-            and location[settings].settings.order ~= nil
-        end,
-        callback = function(touchmenu_instance)
-            Dispatcher:_sortActions(caller, location, settings, touchmenu_instance)
-        end,
-        hold_callback = function(touchmenu_instance)
-            if location[settings]
-            and location[settings].settings
-            and location[settings].settings.order then
-                Dispatcher:_removeFromOrder(location, settings)
-                caller.updated = true
-                if touchmenu_instance then touchmenu_instance:updateItems() end
-            end
-        end,
-    })
 end
 
-function Dispatcher:_showAsMenu(settings)
+function Dispatcher:isActionEnabled(action)
+    local disabled = true
+    if action and (action.condition == nil or action.condition == true) then
+        local ui = require("apps/reader/readerui").instance
+        local context = ui and (ui.paging and "paging" or "rolling")
+        if context == "paging" then
+            disabled = action["rolling"]
+        elseif context == "rolling" then
+            disabled = action["paging"]
+        else -- FM
+            disabled = (action["reader"] or action["rolling"] or action["paging"]) and not action["filemanager"]
+        end
+    end
+    return not disabled
+end
+
+function Dispatcher:_showAsMenu(settings, exec_props)
     local display_list = Dispatcher:getDisplayList(settings)
     local quickmenu
     local buttons = {}
+    if exec_props and exec_props.qm_show then
+        table.insert(buttons, {{
+            text = _("Execute all"),
+            align = "left",
+            font_face = "smallinfofont",
+            font_size = 22,
+            callback = function()
+                UIManager:close(quickmenu)
+                Dispatcher:execute(settings, { qm_show = false })
+            end,
+        }})
+    end
     for _, v in ipairs(display_list) do
         table.insert(buttons, {{
             text = v.text,
+            enabled = Dispatcher:isActionEnabled(settingsList[v.key]),
             align = "left",
             font_face = "smallinfofont",
             font_size = 22,
@@ -984,15 +1032,23 @@ function Dispatcher:_showAsMenu(settings)
                 UIManager:close(quickmenu)
                 Dispatcher:execute({[v.key] = settings[v.key]})
             end,
+            hold_callback = function()
+                if v.key:sub(1, 13) == "profile_exec_" then
+                    UIManager:close(quickmenu)
+                    UIManager:sendEvent(Event:new(settingsList[v.key].event, settingsList[v.key].arg, { qm_show = true }))
+                end
+            end,
         }})
     end
-    local ButtonDialogTitle = require("ui/widget/buttondialogtitle")
-    quickmenu = ButtonDialogTitle:new{
+    local ButtonDialog = require("ui/widget/buttondialog")
+    quickmenu = ButtonDialog:new{
         title = settings.settings.name or _("QuickMenu"),
         title_align = "center",
-        width_factor = 0.8,
+        shrink_unneeded_width = true,
+        shrink_min_width = math.floor(0.6 * Screen:getWidth()),
         use_info_style = false,
         buttons = buttons,
+        anchor = exec_props and exec_props.qm_anchor,
     }
     UIManager:show(quickmenu)
 end
@@ -1001,22 +1057,26 @@ end
 Calls the events in a settings list
 arguments are:
     1) the settings table
-    2) optionally a `gestures` object
+    2) execution management table: { qm_show = true|false} - forcibly show QM / run
+                                   { qm_anchor = ges.pos } - anchor position
+                                   { gesture = ges } - a `gestures` object
 --]]--
-function Dispatcher:execute(settings, gesture)
-    if settings.settings ~= nil and settings.settings.show_as_quickmenu == true then
-        return Dispatcher:_showAsMenu(settings)
+function Dispatcher:execute(settings, exec_props)
+    if ((exec_props == nil or exec_props.qm_show == nil) and settings.settings and settings.settings.show_as_quickmenu)
+            or (exec_props and exec_props.qm_show) then
+        return Dispatcher:_showAsMenu(settings, exec_props)
     end
     local has_many = Dispatcher:_itemsCount(settings) > 1
     if has_many then
         UIManager:broadcastEvent(Event:new("BatchedUpdate"))
     end
+    local gesture = exec_props and exec_props.gesture
     for k, v in iter_func(settings) do
         if type(k) == "number" then
             k = v
             v = settings[k]
         end
-        if settingsList[k] ~= nil and (settingsList[k].condition == nil or settingsList[k].condition == true) then
+        if Dispatcher:isActionEnabled(settingsList[k]) then
             Notification:setNotifySource(Notification.SOURCE_DISPATCHER)
             if settingsList[k].configurable then
                 local value = v
@@ -1027,27 +1087,25 @@ function Dispatcher:execute(settings, gesture)
                 end
                 UIManager:sendEvent(Event:new("ConfigChange", settingsList[k].configurable.name, value))
             end
-            if settingsList[k].category == "none" then
+
+            local category = settingsList[k].category
+            local event = settingsList[k].event
+            if category == "none" then
                 if settingsList[k].arg ~= nil then
-                    UIManager:sendEvent(Event:new(settingsList[k].event, settingsList[k].arg))
+                    UIManager:sendEvent(Event:new(event, settingsList[k].arg, exec_props))
                 else
-                    UIManager:sendEvent(Event:new(settingsList[k].event))
+                    UIManager:sendEvent(Event:new(event))
                 end
-            end
-            if settingsList[k].category == "absolutenumber"
-                or settingsList[k].category == "string"
-            then
-                UIManager:sendEvent(Event:new(settingsList[k].event, v))
-            end
-            -- the event can accept a gesture object or an argument
-            if settingsList[k].category == "arg" then
+            elseif category == "absolutenumber" or category == "string" then
+                UIManager:sendEvent(Event:new(event, v))
+            elseif category == "arg" then
+                -- the event can accept a gesture object or an argument
                 local arg = gesture or settingsList[k].arg
-                UIManager:sendEvent(Event:new(settingsList[k].event, arg))
-            end
-            -- the event can accept a gesture object or a number
-            if settingsList[k].category == "incrementalnumber" then
+                UIManager:sendEvent(Event:new(event, arg))
+            elseif category == "incrementalnumber" then
+                -- the event can accept a gesture object or a number
                 local arg = v ~= 0 and v or gesture or 0
-                UIManager:sendEvent(Event:new(settingsList[k].event, arg))
+                UIManager:sendEvent(Event:new(event, arg))
             end
         end
         Notification:resetNotifySource()

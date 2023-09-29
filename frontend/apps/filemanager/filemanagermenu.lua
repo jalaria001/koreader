@@ -264,6 +264,17 @@ function FileManagerMenu:setUpdateItemTable()
                 text = _("History settings"),
                 sub_item_table = {
                     {
+                        text = _("Shorten date/time"),
+                        checked_func = function()
+                            return G_reader_settings:isTrue("history_datetime_short")
+                        end,
+                        callback = function()
+                            G_reader_settings:flipNilOrFalse("history_datetime_short")
+                            require("readhistory"):reload(true)
+                        end,
+                        separator = true,
+                    },
+                    {
                         text = _("Clear history of deleted files"),
                         callback = function()
                             UIManager:show(ConfirmBox:new{
@@ -451,6 +462,11 @@ To:
     -- insert common settings
     for id, common_setting in pairs(dofile("frontend/ui/elements/common_settings_menu_table.lua")) do
         self.menu_items[id] = common_setting
+    end
+
+    -- Settings > Navigation; this mostly concerns physical keys, and applies *everywhere*
+    if Device:hasKeys() then
+        self.menu_items.physical_buttons_setup = require("ui/elements/physical_buttons")
     end
 
     -- settings tab - Document submenu
@@ -834,8 +850,7 @@ function FileManagerMenu:getSortingMenuTable()
         { _("name"), "strcoll" },
         { _("name (natural sorting)"), "natural" },
         { _("last read date"), "access" },
-        { _("date added"), "change" },
-        { _("date modified"), "modification" },
+        { _("date modified"), "date" },
         { _("size"), "size" },
         { _("type"), "type" },
         { _("percent – unopened first"), "percent_unopened_first" },

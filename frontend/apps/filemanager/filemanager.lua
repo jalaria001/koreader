@@ -1,7 +1,6 @@
 local BD = require("ui/bidi")
 local Blitbuffer = require("ffi/blitbuffer")
 local ButtonDialog = require("ui/widget/buttondialog")
-local ButtonDialogTitle = require("ui/widget/buttondialogtitle")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local CheckButton = require("ui/widget/checkbutton")
 local ConfirmBox = require("ui/widget/confirmbox")
@@ -268,40 +267,46 @@ function FileManager:setupLayout()
             end
             table.insert(buttons, {
                 filemanagerutil.genResetSettingsButton(file, status_button_callback),
-                {
-                    text_func = function()
-                        return ReadCollection:checkItemExist(file)
-                            and _("Remove from favorites") or _("Add to favorites")
-                    end,
-                    enabled = has_provider,
-                    callback = function()
-                        UIManager:close(self.file_dialog)
-                        if ReadCollection:checkItemExist(file) then
-                            ReadCollection:removeItem(file)
-                        else
-                            ReadCollection:addItem(file)
-                        end
-                    end,
-                },
+                filemanagerutil.genAddRemoveFavoritesButton(file, close_dialog_callback, not has_provider),
             })
             table.insert(buttons, {
                 {
                     text = _("Open with…"),
                     callback = function()
                         UIManager:close(self.file_dialog)
-                        local one_time_providers = {
-                            {
-                                provider_name = _("Text viewer"),
+                        local one_time_providers = {}
+                        if DocumentRegistry:isImageFile(file) then
+                            table.insert(one_time_providers, {
+                                provider_name = _("Image viewer"),
                                 callback = function()
-                                    file_manager:openTextViewer(file)
+                                    local ImageViewer = require("ui/widget/imageviewer")
+                                    UIManager:show(ImageViewer:new{
+                                        file = file,
+                                        fullscreen = true,
+                                        with_title_bar = false,
+                                    })
                                 end,
-                            },
-                        }
+                            })
+                        end
+                        table.insert(one_time_providers, {
+                            provider_name = _("Text viewer"),
+                            callback = function()
+                                file_manager:openTextViewer(file)
+                            end,
+                        })
                         if file_manager.texteditor then
                             table.insert(one_time_providers, {
                                 provider_name = _("Text editor"),
                                 callback = function()
                                     file_manager.texteditor:checkEditFile(file)
+                                end,
+                            })
+                        end
+                        if file_manager.archiveviewer and file_manager.archiveviewer:isSupported(file) then
+                            table.insert(one_time_providers, {
+                                provider_name = _("Archive viewer"),
+                                callback = function()
+                                    file_manager.archiveviewer:openArchiveViewer(file)
                                 end,
                             })
                         end
@@ -344,7 +349,7 @@ function FileManager:setupLayout()
             })
         end
 
-        self.file_dialog = ButtonDialogTitle:new{
+        self.file_dialog = ButtonDialog:new{
             title = is_file and BD.filename(file:match("([^/]+)$")) or BD.directory(file:match("([^/]+)$")),
             title_align = "center",
             buttons = buttons,
@@ -446,7 +451,6 @@ function FileManager:init()
     self:initGesListener()
     self:handleEvent(Event:new("SetDimensions", self.dimen))
 
-    -- NOTE: ReaderUI has a _getRunningInstance method for this, because it used to store the instance reference in a private module variable.
     if FileManager.instance == nil then
         logger.dbg("Spinning up new FileManager instance", tostring(self))
     else
@@ -535,7 +539,7 @@ function FileManager:tapPlus()
                                 self.cutfile = false
                                 for file in pairs(self.selected_files) do
                                     self.clipboard = file
-                                    self:pasteHere(self.file_chooser.path)
+                                    self:pasteHere()
                                 end
                                 self:onToggleSelectMode()
                             end,
@@ -564,7 +568,7 @@ function FileManager:tapPlus()
                                 self.cutfile = true
                                 for file in pairs(self.selected_files) do
                                     self.clipboard = file
-                                    self:pasteHere(self.file_chooser.path)
+                                    self:pasteHere()
                                 end
                                 self:onToggleSelectMode()
                             end,
@@ -661,7 +665,7 @@ function FileManager:tapPlus()
                     enabled = self.clipboard and true or false,
                     callback = function()
                         UIManager:close(self.file_dialog)
-                        self:pasteHere(self.file_chooser.path)
+                        self:pasteHere()
                     end,
                 },
             },
@@ -739,7 +743,7 @@ function FileManager:tapPlus()
         end
     end
 
-    self.file_dialog = ButtonDialogTitle:new{
+    self.file_dialog = ButtonDialog:new{
         title = title,
         title_align = "center",
         buttons = buttons,
@@ -838,6 +842,9 @@ function FileManager:setHome(path)
         ok_text = _("Set as HOME"),
         ok_callback = function()
             G_reader_settings:saveSetting("home_dir", path)
+            if G_reader_settings:isTrue("lock_home_folder") then
+                self:onRefresh()
+            end
         end,
     })
     return true
@@ -879,7 +886,7 @@ end
 function FileManager:pasteHere(file)
     local orig_file = BaseUtil.realpath(self.clipboard)
     local orig_name = BaseUtil.basename(self.clipboard)
-    local dest_path = BaseUtil.realpath(file)
+    local dest_path = BaseUtil.realpath(file or self.file_chooser.path)
     dest_path = lfs.attributes(dest_path, "mode") == "directory" and dest_path or dest_path:match("(.*/)")
     local dest_file = BaseUtil.joinPath(dest_path, orig_name)
     local is_file = lfs.attributes(orig_file, "mode") == "file"
@@ -1197,6 +1204,10 @@ function FileManager:onRefreshContent()
     self:onRefresh()
 end
 
+function FileManager:onBookMetadataChanged()
+    self:onRefresh()
+end
+
 function FileManager:onShowFolderMenu()
     local button_dialog
     local function genButton(button_text, button_path)
@@ -1253,7 +1264,6 @@ function FileManager:onShowFolderMenu()
     end
 
     button_dialog = ButtonDialog:new{
-        width = math.floor(Screen:getWidth() * 0.9),
         shrink_unneeded_width = true,
         buttons = buttons,
         anchor = function()
@@ -1266,7 +1276,11 @@ end
 function FileManager:showSelectedFilesList()
     local selected_files = {}
     for file in pairs(self.selected_files) do
-        table.insert(selected_files, { text = file })
+        table.insert(selected_files, {
+            text = filemanagerutil.abbreviate(file),
+            filepath = file,
+            bidi_wrap_func = BD.filepath,
+        })
     end
     local function sorting(a, b)
         local a_path, a_name = util.splitFilePathName(a.text)
@@ -1284,10 +1298,11 @@ function FileManager:showSelectedFilesList()
     local menu = Menu:new{
         is_borderless = true,
         is_popout = false,
+        truncate_left = true,
         show_parent = menu_container,
         onMenuSelect = function(_, item)
             UIManager:close(menu_container)
-            self.file_chooser:changeToPath(util.splitFilePathName(item.text), item.text)
+            self.file_chooser:changeToPath(util.splitFilePathName(item.filepath), item.filepath)
         end,
         close_callback = function()
             UIManager:close(menu_container)

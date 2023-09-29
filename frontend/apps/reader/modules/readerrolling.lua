@@ -61,7 +61,6 @@ local ReaderRolling = InputContainer:extend{
     xpointer = nil,
     panning_steps = ReaderPanning.panning_steps,
     cre_top_bar_enabled = false,
-    visible_pages = 1,
     -- With visible_pages=2, in 2-pages mode, ensure the first
     -- page is always odd or even (odd is logical to avoid a
     -- same page when turning first 2-pages set of document)
@@ -78,7 +77,11 @@ local ReaderRolling = InputContainer:extend{
         FULL_RENDERING_READY = 3,
         RELOADING_DOCUMENT = 4,
         DO_RELOAD_DOCUMENT = 5,
-    }
+    },
+
+    mark_func = nil,
+    unmark_func = nil,
+    _stepRerenderingAutomation = nil,
 }
 
 function ReaderRolling:init()
@@ -274,15 +277,13 @@ function ReaderRolling:onReadSettings(config)
         end
     end
 
-    -- This self.visible_pages may not be the current nb of visible pages
+    -- self.configurable.visible_pages may not be the current nb of visible pages
     -- as crengine may decide to not ensure that in some conditions.
     -- It's the one we got from settings, the one the user has decided on
     -- with config toggle, and the one that we will save for next load.
     -- Use self.ui.document:getVisiblePageCount() to get the current
     -- crengine used value.
-    self.visible_pages = config:readSetting("visible_pages") or
-        G_reader_settings:readSetting("copt_visible_pages") or 1
-    self.ui.document:setVisiblePageCount(self.visible_pages)
+    self.ui.document:setVisiblePageCount(self.configurable.visible_pages)
 
     if config:has("hide_nonlinear_flows") then
         self.hide_nonlinear_flows = config:isTrue("hide_nonlinear_flows")
@@ -316,6 +317,16 @@ end
 -- we cannot do it in onSaveSettings() because getLastPercent() uses self.ui.document
 function ReaderRolling:onCloseDocument()
     self:tearDownRerenderingAutomation()
+    -- Unschedule anything that might still somehow be...
+    if self.mark_func then
+        UIManager:unschedule(self.mark_func)
+    end
+    if self.unmark_func then
+        UIManager:unschedule(self.unmark_func)
+    end
+    UIManager:unschedule(self.onCheckDomStyleCoherence)
+    UIManager:unschedule(self.onUpdatePos)
+
     self.current_header_height = nil -- show unload progress bar at top
     self.ui.doc_settings:saveSetting("percent_finished", self:getLastPercent())
 
@@ -352,7 +363,7 @@ function ReaderRolling:onCheckDomStyleCoherence()
             ok_callback = function()
                 -- Allow for ConfirmBox to be closed before showing
                 -- "Opening file" InfoMessage
-                UIManager:scheduleIn(0.5, function ()
+                UIManager:scheduleIn(0.5, function()
                     -- And check we haven't quit reader in these 0.5s
                     if self.ui.document then
                         self.ui:reloadDocument()
@@ -373,7 +384,6 @@ function ReaderRolling:onSaveSettings()
     if self.ui.document then
         self.ui.doc_settings:saveSetting("percent_finished", self:getLastPercent())
     end
-    self.ui.doc_settings:saveSetting("visible_pages", self.visible_pages)
     self.ui.doc_settings:saveSetting("hide_nonlinear_flows", self.hide_nonlinear_flows)
     self.ui.doc_settings:saveSetting("partial_rerendering", self.partial_rerendering)
 end
@@ -805,7 +815,7 @@ end
 
 function ReaderRolling:onGotoXPointer(xp, marker_xp)
     if self.mark_func then
-        -- unschedule previous marker as it's no more accurate
+        -- Unschedule previous marker as it's no longer accurate.
         UIManager:unschedule(self.mark_func)
         self.mark_func = nil
     end
@@ -835,7 +845,7 @@ function ReaderRolling:onGotoXPointer(xp, marker_xp)
         -- where xpointer target is (and remove if after 1s)
         local screen_y, screen_x = self.ui.document:getScreenPositionFromXPointer(marker_xp)
         local doc_margins = self.ui.document:getPageMargins()
-        local marker_h = Screen:scaleBySize(self.ui.font.font_size * 1.1 * self.ui.font.line_space_percent * (1/100))
+        local marker_h = Screen:scaleBySize(self.configurable.font_size * 1.1 * self.configurable.line_spacing * (1/100))
         -- Make it 4/5 of left margin wide (and bigger when huge margin)
         local marker_w = math.floor(math.max(doc_margins["left"] - Screen:scaleBySize(5), doc_margins["left"] * 4/5))
 
@@ -933,7 +943,7 @@ function ReaderRolling:onGotoViewRel(diff)
         local pan_diff = diff * page_visible_height
         if self.view.page_overlap_enable then
             local overlap_lines = G_reader_settings:readSetting("copt_overlap_lines") or 1
-            local overlap_h = Screen:scaleBySize(self.ui.font.font_size * 1.1 * self.ui.font.line_space_percent * (1/100)) * overlap_lines
+            local overlap_h = Screen:scaleBySize(self.configurable.font_size * 1.1 * self.configurable.line_spacing * (1/100)) * overlap_lines
             if pan_diff > overlap_h then
                 pan_diff = pan_diff - overlap_h
             elseif pan_diff < -overlap_h then
@@ -1009,9 +1019,7 @@ function ReaderRolling:onBatchedUpdateDone()
         self.batched_update_count = 0
         -- Be sure any Notification gets a chance to be painted before
         -- a blocking rerendering
-        UIManager:nextTick(function()
-            self:onUpdatePos()
-        end)
+        UIManager:nextTick(self.onUpdatePos, self)
     end
 end
 
@@ -1040,7 +1048,10 @@ function ReaderRolling:onUpdatePos(force)
     -- Calling this now ensures the re-rendering is done by crengine
     -- so updatePos() has good info and can reposition
     -- the previous xpointer accurately:
-    self.ui.document:getCurrentPos()
+    if self.ui.document then
+        -- This can be racy with CloseDocument, as it's scheduled by onBatchedUpdateDone, guard it
+        self.ui.document:getCurrentPos()
+    end
 
     -- Otherwise, _readMetadata() would do that, but the positioning
     -- would not work as expected, for some reason (it worked
@@ -1091,16 +1102,14 @@ function ReaderRolling:updatePos(force)
     -- Allow for the new rendering to be shown before possibly showing
     -- the "Styles have changed..." ConfirmBox so the user can decide
     -- if it is really needed
-    UIManager:scheduleIn(0.1, function ()
-        self:onCheckDomStyleCoherence()
-    end)
+    UIManager:scheduleIn(0.1, self.onCheckDomStyleCoherence, self)
 end
 
 function ReaderRolling:onChangeViewMode()
     self.current_header_height = self.view.view_mode == "page" and self.ui.document:getHeaderHeight() or 0
     -- Restore current position when switching page/scroll mode
     if self.xpointer then
-        if self.visible_pages == 2 then
+        if self.configurable.visible_pages == 2 then
             -- Switching from 2-pages page mode to scroll mode has crengine switch to 1-page,
             -- and we need to notice this re-rendering and keep things sane
             self:onUpdatePos()
@@ -1258,7 +1267,7 @@ function ReaderRolling:onSetVisiblePages(visible_pages)
     -- We nevertheless update the setting (that will be saved) with what
     -- the user has requested - and not what crengine has enforced, and
     -- always query crengine for if it ends up ensuring it or not.
-    self.visible_pages = visible_pages
+    self.configurable.visible_pages = visible_pages
     local prev_visible_pages = self.ui.document:getVisiblePageCount()
     self.ui.document:setVisiblePageCount(visible_pages)
     local cur_visible_pages = self.ui.document:getVisiblePageCount()
@@ -1560,10 +1569,9 @@ function ReaderRolling:checkXPointersAndProposeDOMVersionUpgrade()
             g_block_rendering_mode = 3 -- default in ReaderTypeset:onReadSettings()
         end
         if g_block_rendering_mode ~= 0 then -- default is not "legacy"
-            -- This setting is actually saved by self.ui.document.configurable
-            local block_rendering_mode = self.ui.document.configurable.block_rendering_mode
+            local block_rendering_mode = self.configurable.block_rendering_mode
             if block_rendering_mode == 0 then
-                self.ui.document.configurable.block_rendering_mode = g_block_rendering_mode
+                self.configurable.block_rendering_mode = g_block_rendering_mode
                 logger.info("  block_rendering_mode switched to", g_block_rendering_mode)
             end
         end
@@ -1624,7 +1632,7 @@ Note that %1 (out of %2) xpaths from your bookmarks and highlights have been nor
         ok_text = _("Upgrade now"),
         ok_callback = function()
             -- Allow for ConfirmBox to be closed before migrating
-            UIManager:scheduleIn(0.5, function ()
+            UIManager:scheduleIn(0.5, function()
                 -- And check we haven't quit reader in these 0.5s
                 if self.ui.document then
                     -- We'd rather not have any painting between the upgrade

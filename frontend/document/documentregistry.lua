@@ -12,6 +12,16 @@ local DocumentRegistry = {
     providers = {},
     filetype_provider = {},
     mimetype_ext = {},
+    image_ext = {
+        gif  = true,
+        jpeg = true,
+        jpg  = true,
+        png  = true,
+        svg  = true,
+        tif  = true,
+        tiff = true,
+        webp = true,
+    },
 }
 
 function DocumentRegistry:addProvider(extension, mimetype, provider, weight)
@@ -39,7 +49,7 @@ function DocumentRegistry:getRandomFile(dir, opened, extension)
     if ok then
         for entry in iter, dir_obj do
             local file = dir .. entry
-            local file_opened = DocSettings:hasSidecarFile(file) and true or false
+            local file_opened = DocSettings:hasSidecarFile(file)
             if lfs.attributes(file, "mode") == "file" and self:hasProvider(file)
                 and (opened == nil or file_opened == opened)
                 and (extension == nil or extension[util.getFileNameSuffix(entry)]) then
@@ -244,6 +254,10 @@ function DocumentRegistry:getReferenceCount(file)
     else
         return nil
     end
+end
+
+function DocumentRegistry:isImageFile(file)
+    return self.image_ext[util.getFileNameSuffix(file):lower()] and true or false
 end
 
 -- load implementations:

@@ -174,23 +174,18 @@ function ReaderStatistics:initData()
     if not self.data then
         self.data = { performance_in_pages= {} }
     end
-    local book_properties = self:getBookProperties()
-    self.data.title = book_properties.title
-    if self.data.title == nil or self.data.title == "" then
-        self.data.title = self.document.file:match("^.+/(.+)$")
+    local book_properties = self.ui.doc_props
+    self.data.title = book_properties.display_title
+    self.data.authors = book_properties.authors or "N/A"
+    self.data.language = book_properties.language or "N/A"
+    local series
+    if book_properties.series then
+        series = book_properties.series
+        if book_properties.series_index then
+            series = series .. " #" .. book_properties.series_index
+        end
     end
-    self.data.authors = book_properties.authors
-    if self.data.authors == nil or self.data.authors == "" then
-        self.data.authors = "N/A"
-    end
-    self.data.language = book_properties.language
-    if self.data.language == nil or self.data.language == "" then
-        self.data.language = "N/A"
-    end
-    self.data.series = book_properties.series
-    if self.data.series == nil or self.data.series == "" then
-        self.data.series = "N/A"
-    end
+    self.data.series = series or "N/A"
 
     self.data.pages = self.view.document:getPageCount()
     if not self.data.md5 then
@@ -812,6 +807,139 @@ function ReaderStatistics:getIdBookDB()
     return tonumber(id_book)
 end
 
+function ReaderStatistics:onBookMetadataChanged(prop_updated)
+    local log_prefix = "Statistics metadata update:"
+    logger.dbg(log_prefix, "got", prop_updated)
+    -- Some metadata of a book (that we may or may not know about) has been modified
+    local filepath = prop_updated.filepath
+    local metadata_key_updated = prop_updated.metadata_key_updated
+    local doc_props = prop_updated.doc_props -- contains up to date metadata
+
+    local updated_field, updated_value
+    if metadata_key_updated == "title" then
+        updated_field = "title"
+        updated_value = doc_props.display_title
+    elseif metadata_key_updated == "authors" then
+        updated_field = "authors"
+        updated_value = doc_props.authors or "N/A"
+    elseif metadata_key_updated == "language" then
+        updated_field = "language"
+        updated_value = doc_props.language or "N/A"
+    elseif metadata_key_updated == "series" or metadata_key_updated == "series_index" then
+        updated_field = "series"
+        updated_value = "N/A"
+        if doc_props.series then
+            updated_value = doc_props.series
+            if doc_props.series_index then
+                updated_value = updated_value .. " #" .. doc_props.series_index
+            end
+        end
+    else
+        -- Updated metadata is one we do not store: nothing to do
+        logger.dbg(log_prefix, "not a metadata we care about:", metadata_key_updated)
+        return
+    end
+
+    local conn = SQ3.open(db_location)
+    local id_book
+
+    if self.ui.document and self.ui.document.file == filepath then
+        -- Current document is the one updated: we have its id readily available
+        id_book = self.id_curr_book
+        logger.dbg(log_prefix, "got book id from opened document:", id_book)
+        -- Update self.data with new value
+        self.data[updated_field] = updated_value
+    else
+        -- Not the current document: we have to find its id in the db, from the (old) title/authors/md5
+        local db_md5, db_title, db_authors, db_authors_legacy
+        if DocSettings:hasSidecarFile(filepath) then
+            local doc_settings = DocSettings:open(filepath)
+            local stats = doc_settings:readSetting("stats")
+            if stats then
+                db_md5 = stats.md5
+                -- Note: stats.title and stats.authors may be osbolete, if the metadata
+                -- has previously been updated and the document never re-opened since.
+                logger.dbg(log_prefix, "got md5 from docsettings:", db_md5)
+            end
+        end
+        if not db_md5 then
+            db_md5 = self:partialMd5(filepath)
+            logger.dbg(log_prefix, "computed md5:", db_md5)
+        end
+
+        if metadata_key_updated == "title" then
+            db_title = prop_updated.metadata_value_old
+            if not db_title then -- empty title
+                -- Build what display_title would have been
+                local filemanagerutil = require("apps/filemanager/filemanagerutil")
+                db_title = filemanagerutil.splitFileNameType(filepath)
+            end
+        else
+            db_title = doc_props.display_title
+        end
+
+        if metadata_key_updated == "authors" then
+            db_authors = prop_updated.metadata_value_old
+        else
+            db_authors = doc_props.authors
+        end
+        if not db_authors then -- empty authors (we get nil)
+            db_authors = "N/A"
+            -- Before Jun 2021 (#7868), we used to store "" for empty authors.
+            -- If book not found with authors="N/A", we'll have to look again with "".
+            db_authors_legacy = ""
+        end
+
+        local sql_stmt = [[
+            SELECT id
+            FROM   book
+            WHERE  title = ?
+              AND  authors = ?
+              AND  md5 = ?;
+        ]]
+        local stmt = conn:prepare(sql_stmt)
+        local result = stmt:reset():bind(db_title, db_authors, db_md5):step()
+        if not result and db_authors_legacy then
+            logger.dbg(log_prefix, "book not present, trying with fallback empty authors")
+            result = stmt:reset():bind(db_title, db_authors_legacy, db_md5):step()
+        end
+        stmt:close()
+        if not result then
+            -- Book not present in statistics
+            logger.info(log_prefix, "book not present", db_title, db_authors, db_md5)
+            conn:close()
+            return
+        end
+        id_book = tonumber(result[1])
+        logger.dbg(log_prefix, "found book id in db:", id_book)
+    end
+    logger.info(log_prefix, "updating book", id_book, updated_field, "with:", updated_value)
+
+    local sql_stmt = [[
+        UPDATE book
+        SET    ]]..updated_field..[[ = ?
+        WHERE  id = ?;
+    ]]
+    local stmt = conn:prepare(sql_stmt)
+    local ok, err = pcall(function()
+        stmt:reset():bind(updated_value, id_book):step()
+    end)
+    if not ok and err then
+        -- Let it be known if "UNIQUE constraint failed: book.title, book.authors, book.md5"
+        err = err:gsub("\n.*", "") -- remove stacktrace
+        logger.err(log_prefix, "updating book failed:", err)
+    end
+
+    sql_stmt = [[
+        SELECT changes();
+    ]]
+    local nb_updated = conn:rowexec(sql_stmt)
+    nb_updated = nb_updated and tonumber(nb_updated) or 0
+    logger.dbg(log_prefix, nb_updated, "book updated.")
+    stmt:close()
+    conn:close()
+end
+
 function ReaderStatistics:insertDB(updated_pagecount)
     if not self.id_curr_book then
         return
@@ -919,15 +1047,6 @@ function ReaderStatistics:getPageTimeTotalStats(id_book)
         total_time = 0
     end
     return total_pages, total_time
-end
-
-function ReaderStatistics:getBookProperties()
-    local props = self.view.document:getProps()
-    if props.title == "No document" or props.title == "" then
-        --- @fixme Sometimes crengine returns "No document", try one more time.
-        props = self.view.document:getProps()
-    end
-    return props
 end
 
 function ReaderStatistics:getStatisticEnabledMenuItem()
@@ -2168,10 +2287,12 @@ end
 
 function ReaderStatistics:resetStatsForBookForPeriod(id_book, min_start_time, max_start_time, day_str, on_reset_confirmed_callback)
     local confirm_text
+    local confirm_button_text
     if day_str then
         -- From getDatesForBook(): we are showing a list of days, with book title at top title:
         -- show the day string to confirm the long-press was on the right day
         confirm_text = T(_("Do you want to reset statistics for day %1 for this book?"), day_str)
+        confirm_button_text = C_("Reset statistics for day for book", "Reset")
     else
         -- From getBooksFromPeriod(): we are showing a list of books, with the period as top title:
         -- show the book title to confirm the long-press was on the right book
@@ -2184,6 +2305,7 @@ function ReaderStatistics:resetStatsForBookForPeriod(id_book, min_start_time, ma
         local book_title = conn:rowexec(string.format(sql_stmt, id_book))
         conn:close()
         confirm_text = T(_("Do you want to reset statistics for this period for book:\n%1"), book_title)
+        confirm_button_text = C_("Reset statistics for period for book", "Reset")
     end
     UIManager:show(ConfirmBox:new{
         text = confirm_text,
@@ -2191,7 +2313,7 @@ function ReaderStatistics:resetStatsForBookForPeriod(id_book, min_start_time, ma
         cancel_callback = function()
             return
         end,
-        ok_text = _("Reset"),
+        ok_text = confirm_button_text,
         ok_callback = function()
             local conn = SQ3.open(db_location)
             local sql_stmt = [[
@@ -2688,7 +2810,7 @@ function ReaderStatistics:onReadingResumed()
 end
 
 function ReaderStatistics:onReadSettings(config)
-    self.data = config.data.stats or {}
+    self.data = config:readSetting("stats", {})
 end
 
 function ReaderStatistics:onReaderReady()
@@ -3050,11 +3172,11 @@ function ReaderStatistics.onSync(local_path, cached_path, income_path)
         return false
     end
 
+    -- NOTE: We could replace this first `UPDATE` with an "upsert" by adding an `ON CONFLICT` clause to the
+    -- following `INSERT`, but using `ON CONFLICT` unnecessarily increments the autoincrement for the table.
+    -- See https://sqlite.org/forum/info/98d4fb9ced866287
     sql = sql .. [[
-        -- If book was opened more recently on another device, then update local db's `last_open` field
-        -- NOTE: We could do this as an "upsert" by adding an `ON CONFLICT` clause to the following `INSERT`
-        --       but using `ON CONFLICT` unnecessarily increments the autoincrement for the table;
-        --       see https://sqlite.org/forum/info/98d4fb9ced866287
+        -- If book was opened more recently on another device, then update local last_open field
         UPDATE book AS b
         SET last_open = i.last_open
         FROM income_db.book AS i
@@ -3101,9 +3223,9 @@ function ReaderStatistics.onSync(local_path, cached_path, income_path)
         INSERT INTO page_stat_data (id_book, page, start_time, duration, total_pages)
             SELECT map.mid, page, start_time, duration, total_pages
             FROM income_db.page_stat_data
-            LEFT JOIN book_id_map as map
+            INNER JOIN book_id_map as map
             ON id_book = map.iid
-            WHERE true
+            WHERE map.mid IS NOT null
         ON CONFLICT(id_book, page, start_time) DO UPDATE SET
         duration = MAX(duration, excluded.duration);
 

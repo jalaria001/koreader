@@ -308,14 +308,10 @@ end
 
 function Translator:getDocumentLanguage()
     local ui = require("apps/reader/readerui").instance
-    if not ui or not ui.document then
+    local lang = ui and ui.doc_props and ui.doc_props.language
+    if not lang then
         return
     end
-    local props = ui.document:getProps()
-    if not props or not props.language or props.language == "" then
-        return
-    end
-    local lang = props.language
     lang = lang:match("(.*)-") or lang
     lang = lang:lower()
     local name, supported = self:getLanguageName(lang, "")
@@ -588,7 +584,8 @@ function Translator:_showTranslation(text, detailed_view, source_lang, target_la
     if detailed_view then
         if is_result_valid(result[6]) then
             -- Alternative translations:
-            table.insert(output, "________")
+            table.insert(output, "")
+            table.insert(output, _("Alternate translations:"))
             for i, r in ipairs(result[6]) do
                 if type(r[3]) == "table" then
                     local s = type(r[1]) == "string" and r[1]:gsub("\n", "") or ""
@@ -604,7 +601,8 @@ function Translator:_showTranslation(text, detailed_view, source_lang, target_la
         end
         if is_result_valid(result[13]) then
             -- Definition(word)
-            table.insert(output, "________")
+            table.insert(output, "")
+            table.insert(output, _("Definition:"))
             for i, r in ipairs(result[13]) do
                 if r[2] and type(r[2]) == "table" then
                     local symbol = util.unicodeCodepointToUtf8(10101 + (i < 10 and i or 10))
@@ -689,7 +687,6 @@ function Translator:_showTranslation(text, detailed_view, source_lang, target_la
             -- it quite long and wrapped, taking valuable vertical spacing
         text = text_all,
         height = height,
-        justified = G_reader_settings:nilOrTrue("dict_justify"),
         add_default_buttons = true,
         buttons_table = buttons_table,
         close_callback = close_callback,

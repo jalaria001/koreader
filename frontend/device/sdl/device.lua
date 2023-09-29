@@ -27,8 +27,7 @@ local function isCommand(s)
 end
 
 local function runCommand(command)
-    local env = jit.os ~= "OSX" and 'env -u LD_LIBRARY_PATH ' or ""
-    return os.execute(env..command) == 0
+    return os.execute(command) == 0
 end
 
 local function getDesktopDicts()
@@ -172,6 +171,9 @@ function Device:init()
         y = self.window.top,
         is_always_portrait = self.isAlwaysPortrait(),
     }
+    -- Pickup the updated window sizes if they were enforced in S.open (we'll get the coordinates via the inital SDL_WINDOWEVENT_MOVED)...
+    self.window.width = self.screen.w
+    self.window.height = self.screen.h
     self.powerd = require("device/sdl/powerd"):new{device = self}
 
     local ok, re = pcall(self.screen.setWindowIcon, self.screen, "resources/koreader.png")
@@ -270,6 +272,9 @@ function Device:init()
                     FileManager.instance:reinit(FileManager.instance.path,
                         FileManager.instance.focused_file)
                 end
+
+                -- make sure dialogs are displayed
+                UIManager:setDirty("all", "ui")
             elseif ev.code == SDL_WINDOWEVENT_MOVED then
                 self.window.left = ev.value.data1
                 self.window.top = ev.value.data2

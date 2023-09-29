@@ -384,29 +384,24 @@ local footerTextGeneratorMap = {
         end
     end,
     book_title = function(footer)
-        local doc_info = footer.ui.document:getProps()
-        if doc_info and doc_info.title then
-            local title = doc_info.title:gsub(" ", "\xC2\xA0") -- replace space with no-break-space
-            local title_widget = TextWidget:new{
-                text = title,
-                max_width = footer._saved_screen_width * footer.settings.book_title_max_width_pct * (1/100),
-                face = Font:getFace(footer.text_font_face, footer.settings.text_font_size),
-                bold = footer.settings.text_font_bold,
-            }
-            local fitted_title_text, add_ellipsis = title_widget:getFittedText()
-            title_widget:free()
-            if add_ellipsis then
-                fitted_title_text = fitted_title_text .. "…"
-            end
-            return BD.auto(fitted_title_text)
-        else
-            return ""
+        local title = footer.ui.doc_props.display_title:gsub(" ", "\u{00A0}") -- replace space with no-break-space
+        local title_widget = TextWidget:new{
+            text = title,
+            max_width = footer._saved_screen_width * footer.settings.book_title_max_width_pct * (1/100),
+            face = Font:getFace(footer.text_font_face, footer.settings.text_font_size),
+            bold = footer.settings.text_font_bold,
+        }
+        local fitted_title_text, add_ellipsis = title_widget:getFittedText()
+        title_widget:free()
+        if add_ellipsis then
+            fitted_title_text = fitted_title_text .. "…"
         end
+        return BD.auto(fitted_title_text)
     end,
     book_chapter = function(footer)
         local chapter_title = footer.ui.toc:getTocTitleByPage(footer.pageno)
         if chapter_title and chapter_title ~= "" then
-            chapter_title = chapter_title:gsub(" ", "\xC2\xA0") -- replace space with no-break-space
+            chapter_title = chapter_title:gsub(" ", "\u{00A0}") -- replace space with no-break-space
             local chapter_widget = TextWidget:new{
                 text = chapter_title,
                 max_width = footer._saved_screen_width * footer.settings.book_chapter_max_width_pct * (1/100),
@@ -2037,7 +2032,7 @@ function ReaderFooter:genAllFooterText()
             if self.settings.item_prefix == "compact_items" then
                 -- remove whitespace from footer items if symbol_type is compact_items
                 -- use a hair-space to avoid issues with RTL display
-                text = text:gsub("%s", "\xE2\x80\x8A")
+                text = text:gsub("%s", "\u{200A}")
             end
             -- if generator request a merge of this item, add it directly,
             -- i.e. no separator before and after the text then.
@@ -2446,6 +2441,11 @@ function ReaderFooter:refreshFooter(refresh, signal)
 end
 
 function ReaderFooter:onResume()
+    -- Reset the initial marker, if any
+    if self.progress_bar.initial_pos_marker then
+        self.progress_bar.inital_percentage = self.progress_bar.percentage
+    end
+
     -- Don't repaint the footer until OutOfScreenSaver if screensaver_delay is enabled...
     local screensaver_delay = G_reader_settings:readSetting("screensaver_delay")
     if screensaver_delay and screensaver_delay ~= "disable" then
@@ -2471,8 +2471,6 @@ end
 
 function ReaderFooter:onSuspend()
     self:unscheduleFooterAutoRefresh()
-    -- Reset the initial marker
-    self.progress_bar.inital_percentage = nil
 end
 
 function ReaderFooter:onCloseDocument()
@@ -2485,35 +2483,24 @@ function ReaderFooter:maybeUpdateFooter()
     self:onUpdateFooter(self:shouldBeRepainted())
 end
 
--- is the same as maybeUpdateFooter
 function ReaderFooter:onFrontlightStateChanged()
-    self:onUpdateFooter(self:shouldBeRepainted())
+    self:maybeUpdateFooter()
 end
+ReaderFooter.onCharging    = ReaderFooter.onFrontlightStateChanged
+ReaderFooter.onNotCharging = ReaderFooter.onFrontlightStateChanged
 
 function ReaderFooter:onNetworkConnected()
     if self.settings.wifi_status then
         self:maybeUpdateFooter()
     end
 end
-
-function ReaderFooter:onNetworkDisconnected()
-    if self.settings.wifi_status then
-        self:onUpdateFooter(self.view.footer_visible)
-    end
-end
-
-function ReaderFooter:onCharging()
-    self:maybeUpdateFooter()
-end
-
-function ReaderFooter:onNotCharging()
-    self:maybeUpdateFooter()
-end
+ReaderFooter.onNetworkDisconnected = ReaderFooter.onNetworkConnected
 
 function ReaderFooter:onSetRotationMode()
     self:updateFooterContainer()
     self:resetLayout(true)
 end
+ReaderFooter.onScreenResize = ReaderFooter.onSetRotationMode
 
 function ReaderFooter:onSetPageHorizMargins(h_margins)
     self.book_margins_footer_width = math.floor((h_margins[1] + h_margins[2])/2)
@@ -2523,13 +2510,14 @@ function ReaderFooter:onSetPageHorizMargins(h_margins)
     end
 end
 
-function ReaderFooter:onScreenResize()
-    self:updateFooterContainer()
-    self:resetLayout(true)
-end
-
 function ReaderFooter:onTimeFormatChanged()
     self:refreshFooter(true, true)
+end
+
+function ReaderFooter:onBookMetadataChanged(prop_updated)
+    if prop_updated.metadata_key_updated == "title" then
+        self:updateFooterText()
+    end
 end
 
 function ReaderFooter:onCloseWidget()

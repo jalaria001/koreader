@@ -70,6 +70,8 @@ local order = {
         "back_in_reader",
         "backspace_as_back",
         "----------------------------",
+        "physical_buttons_setup",
+        "----------------------------",
         "android_volume_keys",
         "android_haptic_feedback",
         "android_back_button",

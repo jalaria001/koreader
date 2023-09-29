@@ -891,7 +891,6 @@ function ReaderHighlight:showHighlightNoteOrDialog(page, index, bookmark_note)
             text = bookmark_note,
             width = math.floor(math.min(Screen:getWidth(), Screen:getHeight()) * 0.8),
             height = math.floor(math.max(Screen:getWidth(), Screen:getHeight()) * 0.4),
-            justified = G_reader_settings:nilOrTrue("dict_justify"),
             buttons_table = {
                 {
                     {
@@ -1436,15 +1435,6 @@ dbg:guard(ReaderHighlight, "translate",
             "translate must not be called with nil selected_text!")
     end)
 
-function ReaderHighlight:getDocumentLanguage()
-    local doc_props = self.ui.doc_settings:readSetting("doc_props")
-    local doc_lang = doc_props and doc_props.language
-    if doc_lang == "" then
-        doc_lang = nil
-    end
-    return doc_lang
-end
-
 function ReaderHighlight:onTranslateText(text, page, index)
     Translator:showTranslation(text, true, nil, nil, true, page, index)
 end
@@ -1473,7 +1463,7 @@ function ReaderHighlight:onTranslateCurrentPage()
         self.ui.document.configurable.text_wrap = is_reflow
     end
     if res and res.text then
-        Translator:showTranslation(res.text, false, self:getDocumentLanguage())
+        Translator:showTranslation(res.text, false, self.ui.doc_props.language)
     end
 end
 
@@ -1649,7 +1639,7 @@ function ReaderHighlight:onUnhighlight(bookmark_item)
     if self.ui.paging then -- We can safely use page
         -- As we may have changed spaces and hyphens handling in the extracted
         -- text over the years, check text identities with them removed
-        local sel_text_cleaned = sel_text:gsub("[ -]", ""):gsub("\xC2\xAD", "")
+        local sel_text_cleaned = sel_text:gsub("[ -]", ""):gsub("\u{00AD}", "")
         for index = 1, #self.view.highlight.saved[page] do
             local highlight = self.view.highlight.saved[page][index]
             -- pos0 are tables and can't be compared directly, except when from
@@ -1657,7 +1647,7 @@ function ReaderHighlight:onUnhighlight(bookmark_item)
             -- If bookmark_item provided, just check datetime
             if ( (datetime == nil and highlight.pos0 == sel_pos0) or
                  (datetime ~= nil and highlight.datetime == datetime) ) then
-                if highlight.text:gsub("[ -]", ""):gsub("\xC2\xAD", "") == sel_text_cleaned then
+                if highlight.text:gsub("[ -]", ""):gsub("\u{00AD}", "") == sel_text_cleaned then
                     idx = index
                     break
                 end
@@ -1864,37 +1854,52 @@ end
 
 function ReaderHighlight:editHighlightStyle(page, i)
     local item = self.view.highlight.saved[page][i]
-    local radio_buttons = {}
-    for _, v in ipairs(highlight_style) do
-        table.insert(radio_buttons, {
-            {
-                text = v[1],
-                checked = item.drawer == v[2],
-                provider = v[2],
-            },
-        })
-    end
-    UIManager:show(require("ui/widget/radiobuttonwidget"):new{
-        title_text = _("Highlight style"),
-        width_factor = 0.5,
-        keep_shown_on_apply = true,
-        radio_buttons = radio_buttons,
-        default_provider = self.view.highlight.saved_drawer or
-            G_reader_settings:readSetting("highlight_drawing_style", "lighten"),
-        callback = function(radio)
-            self:writePdfAnnotation("delete", page, item)
-            item.drawer = radio.provider
+    local apply_drawer = function(drawer)
+        self:writePdfAnnotation("delete", page, item)
+        item.drawer = drawer
+        if self.ui.paging then
             self:writePdfAnnotation("save", page, item)
             local bm_note = self.ui.bookmark:getBookmarkNote(item)
             if bm_note then
                 self:writePdfAnnotation("content", page, item, bm_note)
             end
-            UIManager:setDirty(self.dialog, "ui")
-            self.ui:handleEvent(Event:new("BookmarkUpdated",
-                    self.ui.bookmark:getBookmarkForHighlight({
-                        page = self.ui.paging and page or item.pos0,
-                        datetime = item.datetime,
-                    })))
+        end
+        UIManager:setDirty(self.dialog, "ui")
+        self.ui:handleEvent(Event:new("BookmarkUpdated",
+                self.ui.bookmark:getBookmarkForHighlight({
+                    page = self.ui.paging and page or item.pos0,
+                    datetime = item.datetime,
+                })))
+    end
+    self:showHighlightStyleDialog(apply_drawer, item.drawer)
+end
+
+function ReaderHighlight:showHighlightStyleDialog(caller_callback, item_drawer)
+    local default_drawer, keep_shown_on_apply
+    if item_drawer then -- called from editHighlightStyle
+        default_drawer = self.view.highlight.saved_drawer or
+            G_reader_settings:readSetting("highlight_drawing_style", "lighten")
+        keep_shown_on_apply = true
+    end
+    local radio_buttons = {}
+    for _, v in ipairs(highlight_style) do
+        table.insert(radio_buttons, {
+            {
+                text = v[1],
+                checked = item_drawer == v[2],
+                provider = v[2],
+            },
+        })
+    end
+    local RadioButtonWidget = require("ui/widget/radiobuttonwidget")
+    UIManager:show(RadioButtonWidget:new{
+        title_text = _("Highlight style"),
+        width_factor = 0.5,
+        keep_shown_on_apply = keep_shown_on_apply,
+        radio_buttons = radio_buttons,
+        default_provider = default_drawer,
+        callback = function(radio)
+            caller_callback(radio.provider)
         end,
     })
 end

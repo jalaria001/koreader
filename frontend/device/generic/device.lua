@@ -41,13 +41,17 @@ local Device = {
     hasAuxBattery = no,
     hasKeyboard = no,
     hasKeys = no,
+    canKeyRepeat = no,
     hasDPad = no,
     hasExitOptions = yes,
     hasFewKeys = no,
     hasWifiToggle = yes,
+    hasSeamlessWifiToggle = yes, -- Can toggle Wi-Fi without focus loss and extra user interaction (i.e., not Android)
     hasWifiManager = no,
+    hasWifiRestore = no,
     isDefaultFullscreen = yes,
     isHapticFeedbackEnabled = no,
+    isDeprecated = no, -- device no longer receive OTA updates
     isTouchDevice = no,
     hasFrontlight = no,
     hasNaturalLight = no, -- FL warmth implementation specific to NTX boards (Kobo, Cervantes)
@@ -69,6 +73,7 @@ local Device = {
     isGSensorLocked = no,
     canToggleMassStorage = no,
     canToggleChargingLED = no,
+    _updateChargingLED = nil,
     canUseWAL = yes, -- requires mmap'ed I/O on the target FS
     canRestart = yes,
     canSuspend = no,
@@ -244,6 +249,42 @@ function Device:init()
         local rect = self.screen.getRawSize(self.screen)
         return Geom:new{ x = rect.x, y = rect.y, w = rect.w, h = rect.h }
     end
+
+    -- DPI
+    local dpi_override = G_reader_settings:readSetting("screen_dpi")
+    if dpi_override ~= nil then
+        self:setScreenDPI(dpi_override)
+    end
+
+    -- Night mode
+    self.orig_hw_nightmode = self.screen:getHWNightmode()
+    if G_reader_settings:isTrue("night_mode") then
+        self.screen:toggleNightMode()
+    end
+
+    -- Ensure the proper rotation on startup.
+    -- We default to the rotation KOReader closed with.
+    -- If the rotation is not locked it will be overridden by a book or the FM when opened.
+    local rotation_mode = G_reader_settings:readSetting("closed_rotation_mode")
+    if rotation_mode and rotation_mode ~= self.screen:getRotationMode() then
+        self.screen:setRotationMode(rotation_mode)
+    end
+
+    -- Dithering
+    if self:hasEinkScreen() then
+        self.screen:setupDithering()
+        if self.screen.hw_dithering and G_reader_settings:isTrue("dev_no_hw_dither") then
+            self.screen:toggleHWDithering(false)
+        end
+        if self.screen.sw_dithering and G_reader_settings:isTrue("dev_no_sw_dither") then
+            self.screen:toggleSWDithering(false)
+        end
+        -- NOTE: If device can HW dither (i.e., after setupDithering(), hw_dithering is true, but sw_dithering is false),
+        --       but HW dither is explicitly disabled, and SW dither enabled, don't leave SW dither disabled (i.e., re-enable sw_dithering)!
+        if self:canHWDither() and G_reader_settings:isTrue("dev_no_hw_dither") and G_reader_settings:nilOrFalse("dev_no_sw_dither") then
+            self.screen:toggleSWDithering(true)
+        end
+    end
 end
 
 function Device:setScreenDPI(dpi_override)
@@ -277,13 +318,6 @@ function Device:onPowerEvent(ev)
             else
                 logger.dbg("Resuming...")
                 UIManager:unschedule(self.suspend)
-                if self:hasWifiManager() then
-                    local network_manager = require("ui/network/manager")
-                    if network_manager.wifi_was_on and G_reader_settings:isTrue("auto_restore_wifi") then
-                        network_manager:restoreWifiAsync()
-                        network_manager:scheduleConnectivityCheck()
-                    end
-                end
                 self:resume()
                 local widget_was_closed = Screensaver:close()
                 if widget_was_closed and self:needsScreenRefreshAfterResume() then
@@ -312,8 +346,7 @@ function Device:onPowerEvent(ev)
             if self:hasWifiToggle() then
                 local network_manager = require("ui/network/manager")
                 if network_manager:isWifiOn() then
-                    network_manager:releaseIP()
-                    network_manager:turnOffWifi()
+                    network_manager:disableWifi()
                 end
             end
             self:rescheduleSuspend()
@@ -346,8 +379,7 @@ function Device:onPowerEvent(ev)
             --       because suspend will at best fail, and at worst deadlock the system if Wi-Fi is on,
             --       regardless of who enabled it!
             if network_manager:isWifiOn() then
-                network_manager:releaseIP()
-                network_manager:turnOffWifi()
+                network_manager:disableWifi()
             end
         end
         -- Only turn off the frontlight *after* we've displayed the screensaver and dealt with Wi-Fi,
@@ -491,18 +523,37 @@ function Device:setupChargingLED() end
 function Device:enableCPUCores(amount) end
 
 -- NOTE: For this to work, all three must be implemented, and getKeyRepeat must be run on init (c.f., Kobo)!
--- Device specific method to get the current key repeat setup
+-- Device specific method to get the current key repeat setup (and is responsible for setting the canKeyRepeat cap)
 function Device:getKeyRepeat() end
 -- Device specific method to disable key repeat
 function Device:disableKeyRepeat() end
--- Device specific method to restore key repeat
+-- Device specific method to restore the initial key repeat config
 function Device:restoreKeyRepeat() end
+-- NOTE: This one is for the user-facing toggle, it *ignores* the stock delay/period combo,
+--       opting instead for a hard-coded one (as we can't guarantee that key repeat is actually setup properly or at all).
+-- Device specific method to toggle key repeat
+function Device:toggleKeyRepeat(toggle) end
 
 --[[
 prepare for application shutdown
 --]]
 function Device:exit()
+    -- Save any implementation-specific settings
+    self:saveSettings()
+
+    -- Save current rotation (or the original rotation if ScreenSaver temporarily modified it) to remember it for next startup
+    G_reader_settings:saveSetting("closed_rotation_mode", self.orig_rotation_mode or self.screen:getRotationMode())
+
+    -- Restore initial HW inversion state
+    self.screen:setHWNightmode(self.orig_hw_nightmode)
+
+    -- Tear down the fb backend
     self.screen:close()
+
+    -- Flush settings to disk
+    G_reader_settings:close()
+
+    -- I/O teardown
     require("ffi/input"):closeAll()
 end
 
@@ -799,12 +850,16 @@ function Device:retrieveNetworkInfo()
                             else
                                 local essid_on = iwr.u.data.flags
                                 if essid_on ~= 0 then
+                                    -- Knowing the token index may be fun, bit it isn't in fact, super interesting...
+                                    --[[
                                     local token_index = bit.band(essid_on, C.IW_ENCODE_INDEX)
                                     if token_index > 1 then
                                         table.insert(results, T(_("SSID: \"%1\" [%2]"), ffi.string(essid), token_index))
                                     else
                                         table.insert(results, T(_("SSID: \"%1\""), ffi.string(essid)))
                                     end
+                                    --]]
+                                    table.insert(results, T(_("SSID: \"%1\""), ffi.string(essid)))
                                 else
                                     table.insert(results, _("SSID: off/any"))
                                 end
@@ -949,6 +1004,9 @@ function Device:_UIManagerReady(uimgr)
     -- Setup PM event handlers
     -- NOTE: We keep forwarding the uimgr reference because some implementations don't actually have a module-local UIManager ref to update
     self:_setEventHandlers(uimgr)
+
+    -- Returns a self-debouncing scheduling call (~4s to give some leeway to the kernel, and debounce to deal with potential chattering)
+    self._updateChargingLED = UIManager:debounce(4, false, function() self:setupChargingLED() end)
 end
 -- In case implementations *also* need a reference to UIManager, *this* is the one to implement!
 function Device:UIManagerReady(uimgr) end
@@ -1040,8 +1098,10 @@ end
 -- The common operations that should be performed after resuming the device.
 function Device:_afterResume(inhibit)
     if inhibit ~= false then
-        -- Restore key repeat
-        self:restoreKeyRepeat()
+        -- Restore key repeat if it's not disabled
+        if G_reader_settings:nilOrFalse("input_no_key_repeat") then
+            self:restoreKeyRepeat()
+        end
 
         -- Restore full input handling
         self.input:inhibitInput(false)
@@ -1052,15 +1112,16 @@ end
 
 -- The common operations that should be performed when the device is plugged to a power source.
 function Device:_beforeCharging()
-    -- Leave the kernel some time to figure it out ;o).
-    UIManager:scheduleIn(1, function() self:setupChargingLED() end)
+    -- Invalidate the capacity cache to make sure we poll up-to-date values for the LED check
+    self.powerd:invalidateCapacityCache()
+    self:_updateChargingLED()
     UIManager:broadcastEvent(Event:new("Charging"))
 end
 
 -- The common operations that should be performed when the device is unplugged from a power source.
 function Device:_afterNotCharging()
-    -- Leave the kernel some time to figure it out ;o).
-    UIManager:scheduleIn(1, function() self:setupChargingLED() end)
+    self.powerd:invalidateCapacityCache()
+    self:_updateChargingLED()
     UIManager:broadcastEvent(Event:new("NotCharging"))
 end
 

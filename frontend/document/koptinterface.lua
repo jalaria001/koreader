@@ -13,6 +13,7 @@ local Geom = require("ui/geometry")
 local KOPTContext = require("ffi/koptcontext")
 local Persist = require("persist")
 local TileCacheItem = require("document/tilecacheitem")
+local Utf8Proc = require("ffi/utf8proc")
 local logger = require("logger")
 local util = require("util")
 
@@ -143,7 +144,8 @@ function KoptInterface:createContext(doc, pageno, bbox)
     kc:setZoom(doc.configurable.font_size)
     kc:setMargin(doc.configurable.page_margin)
     kc:setQuality(doc.configurable.quality)
-    kc:setContrast(doc.configurable.contrast)
+    -- k2pdfopt (for reflowing) and mupdf use different algorithms to apply gamma when rendering
+    kc:setContrast(1 / doc.configurable.contrast)
     kc:setDefectSize(doc.configurable.defect_size)
     kc:setLineSpacing(doc.configurable.line_spacing)
     kc:setWordSpacing(doc.configurable.word_spacing)
@@ -945,7 +947,7 @@ function KoptInterface:getTextFromBoxes(boxes, pos0, pos1)
                             -- Previous line ended with a minus.
                             -- Assume it's some hyphenation and discard it.
                             line_text = line_text:sub(1, -2)
-                        elseif line_text:sub(-2, -1) == "\xC2\xAD" then
+                        elseif line_text:sub(-2, -1) == "\u{00AD}" then
                             -- Previous line ended with a hyphen.
                             -- Assume it's some hyphenation and discard it.
                             line_text = line_text:sub(1, -3)
@@ -1337,18 +1339,22 @@ end
 local function all_matches(boxes, pattern, caseInsensitive)
     -- pattern list of single words
     local plist = {}
-    -- split utf-8 characters
-    for words in pattern:gmatch("[\32-\127\192-\255]+[\128-\191]*") do
-        -- split space seperated words
-        for word in words:gmatch("[^%s]+") do
-            table.insert(plist, caseInsensitive and word:lower() or word)
+    -- (as in util.splitToWords(), but only splitting on spaces, keeping punctuations)
+    for word in util.gsplit(pattern, "%s+") do
+        if util.hasCJKChar(word) then
+            for char in util.gsplit(word, "[\192-\255][\128-\191]+", true) do
+                table.insert(plist, caseInsensitive and Utf8Proc.lowercase(util.fixUtf8(char, "?")) or char)
+            end
+        else
+            table.insert(plist, caseInsensitive and Utf8Proc.lowercase(util.fixUtf8(word, "?")) or word)
         end
     end
+    local pnb = #plist
     -- return mached word indices from index i, j
     local function match(i, j)
         local pindex = 1
         local matched_indices = {}
-        if #plist == 0 then return end
+        if pnb == 0 then return end
         while true do
             if #boxes[i] < j then
                 j = j - #boxes[i]
@@ -1356,10 +1362,27 @@ local function all_matches(boxes, pattern, caseInsensitive)
             end
             if i > #boxes then break end
             local box = boxes[i][j]
-            local word = caseInsensitive and box.word:lower() or box.word
-            if word:match(plist[pindex]) then
+            local word = caseInsensitive and Utf8Proc.lowercase(util.fixUtf8(box.word, "?")) or box.word
+            local pword = plist[pindex]
+            local matched
+            if pnb == 1 then -- single word in plist
+                matched = word:find(pword, 1, true)
+            else -- multiple words in plist
+                if pindex == 1 then
+                    -- first word of query should match at end of a word from the document
+                   matched = word:sub(-#pword) == pword
+                elseif pindex == pnb then
+                    -- last word of query should match at start of the word from the document
+                    matched = word:sub(1, #pword) == pword
+                else
+                    -- middle words in query should match exactly the word from the document
+                    matched = word == pword
+                end
+            end
+            if matched then
                 table.insert(matched_indices, {i, j})
-                if pindex == #plist then
+                if pindex == pnb then
+                    -- all words in plist iterated, all matched
                     return matched_indices
                 else
                     j = j + 1
@@ -1370,6 +1393,8 @@ local function all_matches(boxes, pattern, caseInsensitive)
             end
         end
     end
+    -- Note that this returns a full word box, even if what matches
+    -- is only a substring of a word box.
     return coroutine.wrap(function()
         for i, line in ipairs(boxes) do
             for j, box in ipairs(line) do

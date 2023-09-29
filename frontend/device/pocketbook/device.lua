@@ -256,6 +256,21 @@ function PocketBook:init()
     Generic.init(self)
 end
 
+function PocketBook:exit()
+    -- Exit code can be shoddy on some devices due to broken library dtors calling _exit(0) from os.exit(N)
+    local ko_exit = os.getenv("KO_EXIT_CODE")
+    if ko_exit then
+        local f = io.open(ko_exit, "w+")
+        if f then
+            -- As returned by UIManager:run() in reader.lua
+            f:write(tostring(UIManager._exit_code))
+            f:close()
+        end
+    end
+
+    Generic.exit(self)
+end
+
 function PocketBook:notifyBookState(title, document)
     local fn = document and document.file
     logger.dbg("Notify book state", title, fn)
@@ -540,6 +555,14 @@ local PocketBook628 = PocketBook:extend{
     hasNaturalLight = yes,
 }
 
+-- PocketBook Verse (629)
+local PocketBook629 = PocketBook:extend{
+    model = "PB629",
+    display_dpi = 212,
+    isAlwaysPortrait = yes,
+    hasNaturalLight = yes,
+}
+
 -- PocketBook Sense / Sense 2 (630)
 local PocketBook630 = PocketBook:extend{
     model = "PBSense",
@@ -573,6 +596,14 @@ local PocketBook633 = PocketBook:extend{
     canUseCBB = no, -- 24bpp
     isAlwaysPortrait = yes,
     usingForcedRotation = landscape_ccw,
+}
+
+-- PocketBook Verse Pro (634)
+local PocketBook634 = PocketBook:extend{
+    model = "PB634",
+    display_dpi = 300,
+    isAlwaysPortrait = yes,
+    hasNaturalLight = yes,
 }
 
 -- PocketBook Aqua (640)
@@ -646,8 +677,26 @@ function PocketBook741._fb_init(fb, finfo, vinfo)
     vinfo.bits_per_pixel = 24
 end
 
--- PocketBook InkPad 4 (743g)
-local PocketBook743g = PocketBook:extend{
+-- PocketBook InkPad Color 2 (743C)
+local PocketBook743C = PocketBook:extend{
+    model = "PBInkPadColor2",
+    display_dpi = 300,
+    color_saturation = 1.5,
+    hasColorScreen = yes,
+    canHWDither = yes, -- Adjust color saturation with inkview
+    canUseCBB = no, -- 24bpp
+    isAlwaysPortrait = yes,
+    usingForcedRotation = landscape_ccw,
+    hasNaturalLight = yes,
+}
+
+function PocketBook743C._fb_init(fb, finfo, vinfo)
+    -- Pocketbook Color Lux reports bits_per_pixel = 8, but actually uses an RGB24 framebuffer
+    vinfo.bits_per_pixel = 24
+end
+
+-- PocketBook InkPad 4 (743G/743g)
+local PocketBook743G = PocketBook:extend{
     model = "PBInkPad4",
     display_dpi = 300,
     isAlwaysPortrait = yes,
@@ -735,6 +784,8 @@ elseif codename == "PB627" then
     return PocketBook627
 elseif codename == "PB628" then
     return PocketBook628
+elseif codename == "PB629" then
+    return PocketBook629
 elseif codename == "PocketBook 630" then
     return PocketBook630
 elseif codename == "PB631" or codename == "PocketBook 631" then
@@ -743,6 +794,8 @@ elseif codename == "PB632" then
     return PocketBook632
 elseif codename == "PB633" then
     return PocketBook633
+elseif codename == "PB634" then
+    return PocketBook634
 elseif codename == "PB640" or codename == "PocketBook 640" then
     return PocketBook640
 elseif codename == "PB641" then
@@ -757,9 +810,11 @@ elseif codename == "PB740-2" or codename == "PB740-3" then
     return PocketBook740_2
 elseif codename == "PB741" then
     return PocketBook741
-elseif codename == "PB743g" or codename == "PocketBook 743g" then
-    return PocketBook743g
-elseif codename == "PocketBook 840" then
+elseif codename == "PB743C" then
+    return PocketBook743C
+elseif codename == "PB743G" or codename == "PB743g" or codename == "PocketBook 743G" or codename == "PocketBook 743g" then
+    return PocketBook743G
+elseif codename == "PocketBook 840" or codename == "Reader InkPad" then
     return PocketBook840
 elseif codename == "PB970" then
     return PocketBook970

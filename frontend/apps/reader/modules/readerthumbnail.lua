@@ -68,6 +68,12 @@ function ReaderThumbnail:addToMainMenu(menu_items)
         callback = function()
             self:onShowBookMap()
         end,
+        -- Show the alternative overview mode (which is just a restricted
+        -- variation of the main book map) with long-press (let's avoid
+        -- adding another item in the crowded first menu).
+        hold_callback = function()
+            self:onShowBookMap(true)
+        end,
     }
     menu_items.page_browser = {
         text = _("Page browser"),
@@ -77,10 +83,11 @@ function ReaderThumbnail:addToMainMenu(menu_items)
     }
 end
 
-function ReaderThumbnail:onShowBookMap()
+function ReaderThumbnail:onShowBookMap(overview_mode)
     local BookMapWidget = require("ui/widget/bookmapwidget")
     UIManager:show(BookMapWidget:new{
         ui = self.ui,
+        overview_mode = overview_mode,
     })
     return true
 end
@@ -414,7 +421,7 @@ function ReaderThumbnail:_getPageImage(page)
         -- will be croped out after drawing), we will show them just as rendered.
         self.ui.rolling.rendering_state = nil -- Remove any partial rerendering icon
         self.ui.view:onSetViewMode("page") -- Get out of scroll mode
-        if self.ui.font.gamma_index < 30 then  -- Increase font gamma (if not already increased),
+        if self.ui.document.configurable.font_gamma < 30 then  -- Increase font gamma (if not already increased),
             self.ui.document:setGammaIndex(30) -- as downscaling will make text grayer
         end
         self.ui.document:setImageScaling(false) -- No need for smooth scaling as all will be downscaled

@@ -22,6 +22,7 @@ local logger = require("logger")
 local optionsutil = require("ui/data/optionsutil")
 local Size = require("ui/size")
 local time = require("ui/time")
+local util = require("util")
 local _ = require("gettext")
 local Screen = Device.screen
 local T = require("ffi/util").template
@@ -47,10 +48,11 @@ local ReaderView = OverlapGroup:extend{
     -- properties of the gap drawn between each page in scroll mode:
     page_gap = nil, -- table
     -- DjVu page rendering mode (used in djvu.c:drawPage())
-    render_mode = G_defaults:readSetting("DRENDER_MODE"), -- default to COLOR
+    render_mode = nil, -- default to COLOR, will be set in onReadSettings()
     -- Crengine view mode
     view_mode = G_defaults:readSetting("DCREREADER_VIEW_MODE"), -- default to page mode
     hinting = true,
+    emitHintPageEvent = nil,
 
     -- visible area within current viewing page
     visible_area = nil,
@@ -635,7 +637,7 @@ function ReaderView:drawHighlightRect(bb, _x, _y, rect, drawer, draw_note_mark)
         else
             local note_mark_pos_x
             if self.ui.paging or
-                    (self.ui.document:getVisiblePageCount() == 1) or -- one-page mode
+                    (self.document:getVisiblePageCount() == 1) or -- one-page mode
                     (x < Screen:getWidth() / 2) then -- page 1 in two-page mode
                 note_mark_pos_x = self.note_mark_pos_x1
             else
@@ -857,28 +859,22 @@ In combination with zoom to fit page, page height, content height, content or co
 end
 
 function ReaderView:onReadSettings(config)
-    self.document:setTileCacheValidity(config:readSetting("tile_cache_validity_ts"))
-    self.render_mode = config:readSetting("render_mode") or 0
-    local rotation_mode = nil
-    local locked = G_reader_settings:isTrue("lock_rotation")
-    -- Keep current rotation by doing nothing when sticky rota is enabled.
-    if not locked then
-        -- Honor docsettings's rotation
-        if config:has("rotation_mode") then
-            rotation_mode = config:readSetting("rotation_mode") -- Doc's
-        else
-            -- No doc specific rotation, pickup global defaults for the doc type
-            if self.ui.paging then
-                rotation_mode = G_reader_settings:readSetting("kopt_rotation_mode") or Screen.DEVICE_ROTATED_UPRIGHT
-            else
-                rotation_mode = G_reader_settings:readSetting("copt_rotation_mode") or Screen.DEVICE_ROTATED_UPRIGHT
-            end
+    if self.ui.paging then
+        self.document:setTileCacheValidity(config:readSetting("tile_cache_validity_ts"))
+        self.render_mode = config:readSetting("render_mode") or G_defaults:readSetting("DRENDER_MODE")
+        if config:has("gamma") then -- old doc contrast setting
+            config:saveSetting("kopt_contrast", config:readSetting("gamma"))
+            config:delSetting("gamma")
         end
     end
-    if rotation_mode then
+    if G_reader_settings:nilOrFalse("lock_rotation") then
+        local setting_name = self.ui.paging and "kopt_rotation_mode" or "copt_rotation_mode"
+        -- document.configurable.rotation_mode is not ready yet
+        local rotation_mode = config:readSetting(setting_name)
+                           or G_reader_settings:readSetting(setting_name)
+                           or Screen.DEVICE_ROTATED_UPRIGHT
         self:onSetRotationMode(rotation_mode)
     end
-    self.state.gamma = config:readSetting("gamma") or 1.0
     local full_screen = config:readSetting("kopt_full_screen") or self.document.configurable.full_screen
     if full_screen == 0 then
         self.footer_visible = false
@@ -995,7 +991,7 @@ function ReaderView:onGammaUpdate(gamma)
     if self.page_scroll then
         self.ui:handleEvent(Event:new("UpdateScrollPageGamma", gamma))
     end
-    Notification:notify(T(_("Font gamma set to: %1."), gamma))
+    Notification:notify(T(_("Contrast set to: %1."), gamma))
 end
 
 -- For ReaderKOptListener
@@ -1063,20 +1059,22 @@ function ReaderView:onPageGapUpdate(page_gap)
 end
 
 function ReaderView:onSaveSettings()
-    if self.document:isEdited() and G_reader_settings:readSetting("save_document") ~= "always" then
-        -- Either "disable" (and the current tiles will be wrong) or "prompt" (but the
-        -- prompt will happen later, too late to catch "Don't save"), so force cached
-        -- tiles to be ignored on next opening.
-        self.document:resetTileCacheValidity()
+    if self.ui.paging then
+        if self.document:isEdited() and G_reader_settings:readSetting("save_document") ~= "always" then
+            -- Either "disable" (and the current tiles will be wrong) or "prompt" (but the
+            -- prompt will happen later, too late to catch "Don't save"), so force cached
+            -- tiles to be ignored on next opening.
+            self.document:resetTileCacheValidity()
+        end
+        self.ui.doc_settings:saveSetting("tile_cache_validity_ts", self.document:getTileCacheValidity())
+        if self.document.is_djvu then
+            self.ui.doc_settings:saveSetting("render_mode", self.render_mode)
+        end
     end
-    self.ui.doc_settings:saveSetting("tile_cache_validity_ts", self.document:getTileCacheValidity())
-    self.ui.doc_settings:saveSetting("render_mode", self.render_mode)
     -- Don't etch the current rotation in stone when sticky rotation is enabled
-    local locked = G_reader_settings:isTrue("lock_rotation")
-    if not locked then
-        self.ui.doc_settings:saveSetting("rotation_mode", Screen:getRotationMode())
+    if G_reader_settings:nilOrFalse("lock_rotation") then
+        self.document.configurable.rotation_mode = Screen:getRotationMode() -- will be saved by ReaderConfig
     end
-    self.ui.doc_settings:saveSetting("gamma", self.state.gamma)
     self.ui.doc_settings:saveSetting("highlight", self.highlight.saved)
     self.ui.doc_settings:saveSetting("inverse_reading_order", self.inverse_reading_order)
     self.ui.doc_settings:saveSetting("show_overlap_enable", self.page_overlap_enable)
@@ -1106,9 +1104,13 @@ function ReaderView:getRenderModeMenuTable()
     }
 end
 
-function ReaderView:onCloseDocument()
-    -- stop any pending HintPage event
+function ReaderView:onCloseWidget()
+    -- Stop any pending HintPage event
     UIManager:unschedule(self.emitHintPageEvent)
+    --- @fixme: The awful readerhighlight_spec test *relies* on this pointer being left dangling...
+    if not self.ui._testsuite then
+        self.emitHintPageEvent = nil
+    end
 end
 
 function ReaderView:onReaderReady()
@@ -1147,7 +1149,7 @@ function ReaderView:isOverlapAllowed()
     if self.ui.paging then
         return not self.page_scroll
             and (self.ui.paging.zoom_mode ~= "page"
-                or (self.ui.paging.zoom_mode == "page" and self.ui.paging.is_reflowed))
+                or (self.ui.paging.zoom_mode == "page" and self.document.configurable.text_wrap == 1))
             and not self.ui.paging.zoom_mode:find("height")
     else
         return self.view_mode ~= "page"
@@ -1155,11 +1157,7 @@ function ReaderView:isOverlapAllowed()
 end
 
 function ReaderView:setupTouchZones()
-    if self.ui.rolling then
-        self.ui.rolling:setupTouchZones()
-    else
-        self.ui.paging:setupTouchZones()
-    end
+    (self.ui.rolling or self.ui.paging):setupTouchZones()
 end
 
 function ReaderView:onToggleReadingOrder()
@@ -1245,17 +1243,17 @@ function ReaderView:setupNoteMarkPosition()
                 self.note_mark_pos_x1 = screen_w - sign_gap - sign_w
             end
         else
-            local doc_margins = self.ui.document:getPageMargins()
+            local doc_margins = self.document:getPageMargins()
             local pos_x_r = screen_w - doc_margins["right"] + sign_gap -- mark in the right margin
             local pos_x_l = doc_margins["left"] - sign_gap - sign_w -- mark in the left margin
-            if self.ui.document:getVisiblePageCount() == 1 then
+            if self.document:getVisiblePageCount() == 1 then
                 if BD.mirroredUILayout() then
                     self.note_mark_pos_x1 = pos_x_l
                 else
                     self.note_mark_pos_x1 = pos_x_r
                 end
             else -- two-page mode
-                local page2_x = self.ui.document:getPageOffsetX(self.ui.document:getCurrentPage(true)+1)
+                local page2_x = self.document:getPageOffsetX(self.document:getCurrentPage(true)+1)
                 if BD.mirroredUILayout() then
                     self.note_mark_pos_x1 = pos_x_l
                     self.note_mark_pos_x2 = pos_x_l + page2_x
@@ -1266,6 +1264,43 @@ function ReaderView:setupNoteMarkPosition()
             end
         end
     end
+end
+
+function ReaderView:getCurrentPageLineWordCounts()
+    local lines_nb, words_nb = 0, 0
+    if self.ui.rolling then
+        local res = self.document:getTextFromPositions({x = 0, y = 0},
+            {x = Screen:getWidth(), y = Screen:getHeight()}, true) -- do not highlight
+        if res then
+            lines_nb = #self.document:getScreenBoxesFromPositions(res.pos0, res.pos1, true)
+            for word in util.gsplit(res.text, "[%s%p]+", false) do
+                if util.hasCJKChar(word) then
+                    for char in util.gsplit(word, "[\192-\255][\128-\191]+", true) do
+                        words_nb = words_nb + 1
+                    end
+                else
+                    words_nb = words_nb + 1
+                end
+            end
+        end
+    else
+        local page_boxes = self.document:getTextBoxes(self.ui:getCurrentPage())
+        if page_boxes and page_boxes[1][1].word then
+            lines_nb = #page_boxes
+            for _, line in ipairs(page_boxes) do
+                if #line == 1 and line[1].word == "" then -- empty line
+                    lines_nb = lines_nb - 1
+                else
+                    words_nb = words_nb + #line
+                    local last_word = line[#line].word
+                    if last_word:sub(-1) == "-" and last_word ~= "-" then -- hyphenated
+                        words_nb = words_nb - 1
+                    end
+                end
+            end
+        end
+    end
+    return lines_nb, words_nb
 end
 
 return ReaderView

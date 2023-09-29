@@ -77,7 +77,7 @@ local function isSpecialOffers()
     -- Look at the current blanket modules to see if the SO screensavers are enabled...
     local haslipc, lipc = pcall(require, "liblipclua")
     if not (haslipc and lipc) then
-        logger.warn("could not load liblibclua")
+        logger.warn("could not load liblipclua:", lipc)
         return true
     end
     local lipc_handle = lipc.init("com.github.koreader.device")
@@ -138,6 +138,7 @@ local Kindle = Generic:extend{
     isSpecialOffers = isSpecialOffers(),
     hasOTAUpdates = yes,
     hasFastWifiStatusQuery = yes,
+    hasWifiRestore = yes,
     -- NOTE: HW inversion is generally safe on mxcfb Kindles
     canHWInvert = yes,
     -- NOTE: And the fb driver is generally sane on those, too
@@ -184,6 +185,10 @@ function Kindle:initNetworkManager(NetworkMgr)
 
     function NetworkMgr:getNetworkInterfaceName()
         return "wlan0" -- so far, all Kindles appear to use wlan0
+    end
+
+    function NetworkMgr:restoreWifiAsync()
+        kindleEnableWifi(1)
     end
 
     NetworkMgr.isWifiOn = NetworkMgr.sysfsWifiOn

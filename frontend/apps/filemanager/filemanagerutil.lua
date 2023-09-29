@@ -33,7 +33,8 @@ function filemanagerutil.abbreviate(path)
     return path
 end
 
-function filemanagerutil.splitFileNameType(filename)
+function filemanagerutil.splitFileNameType(filepath)
+    local _, filename = util.splitFilePathName(filepath)
     local filename_without_suffix, filetype = util.splitFileNameSuffix(filename)
     filetype = filetype:lower()
     if filetype == "zip" then
@@ -45,14 +46,6 @@ function filemanagerutil.splitFileNameType(filename)
         end
     end
     return filename_without_suffix, filetype
-end
-
--- Purge doc settings in sidecar directory
-function filemanagerutil.purgeSettings(file)
-    local file_abs_path = ffiutil.realpath(file)
-    if file_abs_path then
-        return DocSettings:open(file_abs_path):purge()
-    end
 end
 
 -- Purge doc settings except kept
@@ -96,28 +89,43 @@ end
 function filemanagerutil.setStatus(file, status)
     -- In case the book doesn't have a sidecar file, this'll create it
     local doc_settings = DocSettings:open(file)
-    local summary = doc_settings:readSetting("summary") or {}
+    local summary = doc_settings:readSetting("summary", {})
     summary.status = status
     summary.modified = os.date("%Y-%m-%d", os.time())
-    doc_settings:saveSetting("summary", summary)
     doc_settings:flush()
 end
 
+function filemanagerutil.statusToString(status)
+    local status_to_text = {
+        new       = _("Unread"),
+        reading   = _("Reading"),
+        abandoned = _("On hold"),
+        complete  = _("Finished"),
+    }
+
+    return status_to_text[status]
+end
+
 -- Generate all book status file dialog buttons in a row
-function filemanagerutil.genStatusButtonsRow(file, caller_callback, current_status)
-    local status = current_status or filemanagerutil.getStatus(file)
+function filemanagerutil.genStatusButtonsRow(doc_settings_or_file, caller_callback)
+    local summary, status
+    if type(doc_settings_or_file) == "table" then -- currently opened file
+        summary = doc_settings_or_file:readSetting("summary")
+        status = summary.status
+    else
+        status = filemanagerutil.getStatus(doc_settings_or_file)
+    end
     local function genStatusButton(to_status)
-        local status_text = {
-            reading   = _("Reading"),
-            abandoned = _("On hold"),
-            complete  = _("Finished"),
-        }
         return {
-            text = status_text[to_status] .. (status == to_status and "  ✓" or ""),
+            text = filemanagerutil.statusToString(to_status) .. (status == to_status and "  ✓" or ""),
             id = to_status, -- used by covermenu
             enabled = status ~= to_status,
             callback = function()
-                filemanagerutil.setStatus(file, to_status)
+                if summary then -- currently opened file
+                    summary.status = to_status
+                else
+                    filemanagerutil.setStatus(doc_settings_or_file, to_status)
+                end
                 caller_callback()
             end,
         }
@@ -131,35 +139,105 @@ end
 
 -- Generate "Reset" file dialog button
 function filemanagerutil.genResetSettingsButton(file, caller_callback, button_disabled)
+    file = ffiutil.realpath(file) or file
+    local has_sidecar_file = DocSettings:hasSidecarFile(file)
+    local custom_cover_file = DocSettings:findCoverFile(file)
+    local has_custom_cover_file = custom_cover_file and true or false
+    local custom_metadata_file = DocSettings:getCustomMetadataFile(file)
+    local has_custom_metadata_file = custom_metadata_file and true or false
     return {
         text = _("Reset"),
         id = "reset", -- used by covermenu
-        enabled = (not button_disabled and DocSettings:hasSidecarFile(ffiutil.realpath(file))) and true or false,
+        enabled = not button_disabled and (has_sidecar_file or has_custom_metadata_file or has_custom_cover_file),
         callback = function()
+            local CheckButton = require("ui/widget/checkbutton")
             local ConfirmBox = require("ui/widget/confirmbox")
+            local check_button_settings, check_button_cover, check_button_metadata
             local confirmbox = ConfirmBox:new{
                 text = T(_("Reset this document?") .. "\n\n%1\n\n" ..
-                    _("Document progress, settings, bookmarks, highlights, notes and custom cover image will be permanently lost."),
+                         _("Information will be permanently lost."),
                     BD.filepath(file)),
                 ok_text = _("Reset"),
                 ok_callback = function()
-                    local custom_metadata_purged = filemanagerutil.purgeSettings(file)
-                    if custom_metadata_purged then -- refresh coverbrowser cached book info
-                        local FileManager = require("apps/filemanager/filemanager")
-                        local ui = FileManager.instance
-                        if not ui then
-                            local ReaderUI = require("apps/reader/readerui")
-                            ui = ReaderUI.instance
-                        end
+                    local data_to_purge = {
+                        doc_settings         = check_button_settings.checked,
+                        custom_cover_file    = check_button_cover.checked and custom_cover_file,
+                        custom_metadata_file = check_button_metadata.checked and custom_metadata_file,
+                    }
+                    DocSettings:open(file):purge(nil, data_to_purge)
+                    if data_to_purge.custom_cover_file or data_to_purge.custom_metadata_file then
+                        local ui = require("apps/filemanager/filemanager").instance
+                                or require("apps/reader/readerui").instance
                         if ui and ui.coverbrowser then
-                            ui.coverbrowser:deleteBookInfo(file)
+                            ui.coverbrowser:deleteBookInfo(file) -- refresh coverbrowser cached book info
                         end
                     end
-                    require("readhistory"):fileSettingsPurged(file)
+                    if data_to_purge.doc_settings then
+                        require("readhistory"):fileSettingsPurged(file)
+                    end
                     caller_callback()
                 end,
             }
+            check_button_settings = CheckButton:new{
+                text = _("document settings, progress, bookmarks, highlights, notes"),
+                checked = has_sidecar_file,
+                enabled = has_sidecar_file,
+                parent = confirmbox,
+            }
+            confirmbox:addWidget(check_button_settings)
+            check_button_cover = CheckButton:new{
+                text = _("custom cover image"),
+                checked = has_custom_cover_file,
+                enabled = has_custom_cover_file,
+                parent = confirmbox,
+            }
+            confirmbox:addWidget(check_button_cover)
+            check_button_metadata = CheckButton:new{
+                text = _("custom book metadata"),
+                checked = has_custom_metadata_file,
+                enabled = has_custom_metadata_file,
+                parent = confirmbox,
+            }
+            confirmbox:addWidget(check_button_metadata)
             UIManager:show(confirmbox)
+        end,
+    }
+end
+
+function filemanagerutil.genAddRemoveFavoritesButton(file, caller_callback, button_disabled)
+    local ReadCollection = require("readcollection")
+    local is_added = ReadCollection:checkItemExist(file)
+    return {
+        text_func = function()
+            return is_added and _("Remove from favorites") or _("Add to favorites")
+        end,
+        enabled = not button_disabled,
+        callback = function()
+            caller_callback()
+            if is_added then
+                ReadCollection:removeItem(file)
+            else
+                ReadCollection:addItem(file)
+            end
+        end,
+    }
+end
+
+function filemanagerutil.genShowFolderButton(file, caller_callback, button_disabled)
+    return {
+        text = _("Show folder"),
+        enabled = not button_disabled,
+        callback = function()
+            caller_callback()
+            local ui = require("apps/filemanager/filemanager").instance
+            if ui then
+                local pathname = util.splitFilePathName(file)
+                ui.file_chooser:changeToPath(pathname, file)
+            else
+                ui = require("apps/reader/readerui").instance
+                ui:onClose()
+                ui:showFileManager(file)
+            end
         end,
     }
 end

@@ -364,6 +364,9 @@ function KoboPowerD:turnOffFrontlightHW(done_callback)
         -- If UIManager is not initialized yet, just turn it off immediately
         self:setIntensityHW(self.fl_min)
     end
+
+    -- We consume done_callback ourselves, make sure Generic's PowerD gets the memo
+    return true
 end
 
 -- Similar functionality as `Kobo:turnOnFrontlightHW`, but the other way around ;).
@@ -403,14 +406,16 @@ function KoboPowerD:turnOnFrontlightHW(done_callback)
         -- We've got nothing to do if we're already ramping up
         if not self.fl_ramp_up_running then
             self:_stopFrontlightRamp()
-            self.fl_ramp_up_running = true
-
             self:turnOnFrontlightRamp(self.fl_min, self.fl_intensity, done_callback)
+            self.fl_ramp_up_running = true
         end
     else
         -- If UIManager is not initialized yet, just turn it on immediately
         self:setIntensityHW(self.fl_intensity)
     end
+
+    -- We consume done_callback ourselves, make sure Generic's PowerD gets the memo
+    return true
 end
 
 -- Turn off front light before suspend.

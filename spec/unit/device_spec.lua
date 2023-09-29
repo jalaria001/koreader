@@ -25,6 +25,8 @@ describe("device module", function()
                     scaleBySize = fb.scaleBySize,
                     setWindowTitle = function() end,
                     refreshFull = function() end,
+                    getHWNightmode = function() return false end,
+                    setupDithering = function() end,
                 }
             end
         }
@@ -367,7 +369,7 @@ describe("device module", function()
             local sample_pdf = "spec/front/unit/data/tall.pdf"
             local ReaderUI = require("apps/reader/readerui")
             ReaderUI:doShowReader(sample_pdf)
-            local readerui = ReaderUI._getRunningInstance()
+            local readerui = ReaderUI.instance
             stub(readerui, "onFlushSettings")
             UIManager.event_handlers.PowerPress()
             UIManager.event_handlers.PowerRelease()
@@ -409,7 +411,7 @@ describe("device module", function()
             local sample_pdf = "spec/front/unit/data/tall.pdf"
             local ReaderUI = require("apps/reader/readerui")
             ReaderUI:doShowReader(sample_pdf)
-            local readerui = ReaderUI._getRunningInstance()
+            local readerui = ReaderUI.instance
             stub(readerui, "onFlushSettings")
             UIManager.event_handlers.PowerPress()
             UIManager.event_handlers.PowerRelease()
@@ -457,7 +459,7 @@ describe("device module", function()
             local sample_pdf = "spec/front/unit/data/tall.pdf"
             local ReaderUI = require("apps/reader/readerui")
             ReaderUI:doShowReader(sample_pdf)
-            local readerui = ReaderUI._getRunningInstance()
+            local readerui = ReaderUI.instance
             stub(readerui, "onFlushSettings")
             UIManager.event_handlers.PowerPress()
             UIManager.event_handlers.PowerRelease()
@@ -484,7 +486,7 @@ describe("device module", function()
             local sample_pdf = "spec/front/unit/data/tall.pdf"
             local ReaderUI = require("apps/reader/readerui")
             ReaderUI:doShowReader(sample_pdf)
-            local readerui = ReaderUI._getRunningInstance()
+            local readerui = ReaderUI.instance
             stub(readerui, "onFlushSettings")
             -- UIManager.event_handlers.PowerPress() -- We only fake a Release event on the Emu
             UIManager.event_handlers.PowerRelease()

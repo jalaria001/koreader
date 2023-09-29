@@ -32,33 +32,11 @@ function ReaderTypeset:onReadSettings(config)
     local tweaks_css = self.ui.styletweak:getCssText()
     self.ui.document:setStyleSheet(self.css, tweaks_css)
 
-    if config:has("embedded_fonts") then
-        self.embedded_fonts = config:isTrue("embedded_fonts")
-    else
-        -- default to enable embedded fonts
-        -- note that it's a bit confusing here:
-        -- global settins store 0/1, while document settings store false/true
-        -- we leave it that way for now to maintain backwards compatibility
-        local global = G_reader_settings:readSetting("copt_embedded_fonts")
-        self.embedded_fonts = (global == nil or global == 1) and true or false
-    end
-    -- As this is new, call it only when embedded_fonts are explicitely disabled
-    -- self.ui.document:setEmbeddedFonts(self.embedded_fonts and 1 or 0)
-    if not self.embedded_fonts then
-        self.ui.document:setEmbeddedFonts(0)
-    end
+    -- default to enable embedded fonts
+    self.ui.document:setEmbeddedFonts(self.configurable.embedded_fonts)
 
-    if config:has("embedded_css") then
-        self.embedded_css = config:isTrue("embedded_css")
-    else
-        -- default to enable embedded CSS
-        -- note that it's a bit confusing here:
-        -- global settings store 0/1, while document settings store false/true
-        -- we leave it that way for now to maintain backwards compatibility
-        local global = G_reader_settings:readSetting("copt_embedded_css")
-        self.embedded_css = (global == nil or global == 1) and true or false
-    end
-    self.ui.document:setEmbeddedStyleSheet(self.embedded_css and 1 or 0)
+    -- default to enable embedded CSS
+    self.ui.document:setEmbeddedStyleSheet(self.configurable.embedded_css)
 
     -- Block rendering mode: stay with legacy rendering for books
     -- previously opened so bookmarks and highlights stay valid.
@@ -74,104 +52,99 @@ function ReaderTypeset:onReadSettings(config)
                                      or 3 -- default to 'web' mode
         end
         -- Let ConfigDialog know so it can update it on screen and have it saved on quit
-        self.ui.document.configurable.block_rendering_mode = self.block_rendering_mode
+        self.configurable.block_rendering_mode = self.block_rendering_mode
     end
     self:setBlockRenderingMode(self.block_rendering_mode)
 
-    -- set render DPI
-    self.render_dpi = config:readSetting("render_dpi")
-                   or G_reader_settings:readSetting("copt_render_dpi")
-                   or 96
-    self:setRenderDPI(self.render_dpi)
+    -- default to 96 dpi
+    self.ui.document:setRenderDPI(self.configurable.render_dpi)
 
     -- uncomment if we want font size to follow DPI changes
     -- self.ui.document:setRenderScaleFontWithDPI(1)
 
     -- set page margins
-    local h_margins = config:readSetting("copt_h_page_margins")
-                   or G_reader_settings:readSetting("copt_h_page_margins")
-                   or G_defaults:readSetting("DCREREADER_CONFIG_H_MARGIN_SIZES_MEDIUM")
-    local t_margin = config:readSetting("copt_t_page_margin")
-                  or G_reader_settings:readSetting("copt_t_page_margin")
-                  or G_defaults:readSetting("DCREREADER_CONFIG_T_MARGIN_SIZES_LARGE")
-    local b_margin = config:readSetting("copt_b_page_margin")
-                  or G_reader_settings:readSetting("copt_b_page_margin")
-                  or G_defaults:readSetting("DCREREADER_CONFIG_B_MARGIN_SIZES_LARGE")
-    self.unscaled_margins = { h_margins[1], t_margin, h_margins[2], b_margin }
+    self.unscaled_margins = { self.configurable.h_page_margins[1], self.configurable.t_page_margin,
+                              self.configurable.h_page_margins[2], self.configurable.b_page_margin }
     self:onSetPageMargins(self.unscaled_margins)
-    self.sync_t_b_page_margins = config:readSetting("copt_sync_t_b_page_margins")
-                              or G_reader_settings:readSetting("copt_sync_t_b_page_margins")
-                              or 0
-    self.sync_t_b_page_margins = self.sync_t_b_page_margins == 1 and true or false
+    self.sync_t_b_page_margins = self.configurable.sync_t_b_page_margins == 1 and true or false
 
-    -- default to disable TXT formatting as it does more harm than good
+    -- default to disable TXT formatting as it does more harm than good (the setting is not in UI)
     self.txt_preformatted = config:readSetting("txt_preformatted")
                          or G_reader_settings:readSetting("txt_preformatted")
                          or 1
-    self:toggleTxtPreFormatted(self.txt_preformatted)
+    self.ui.document:setTxtPreFormatted(self.txt_preformatted)
 
-    -- default to disable smooth scaling for now.
-    if config:has("smooth_scaling") then
-        self.smooth_scaling = config:isTrue("smooth_scaling")
-    else
-        local global = G_reader_settings:readSetting("copt_smooth_scaling")
-        self.smooth_scaling = global == 1 and true or false
-    end
-    self:toggleImageScaling(self.smooth_scaling)
+    -- default to disable smooth scaling
+    self.ui.document:setImageScaling(self.configurable.smooth_scaling == 1)
 
     -- default to automagic nightmode-friendly handling of images
-    if config:has("nightmode_images") then
-        self.nightmode_images = config:isTrue("nightmode_images")
-    else
-        local global = G_reader_settings:readSetting("copt_nightmode_images")
-        self.nightmode_images = (global == nil or global == 1) and true or false
-    end
-    self:toggleNightmodeImages(self.nightmode_images)
+    self.ui.document:setNightmodeImages(self.configurable.nightmode_images == 1)
 end
 
 function ReaderTypeset:onSaveSettings()
     self.ui.doc_settings:saveSetting("css", self.css)
-    self.ui.doc_settings:saveSetting("embedded_css", self.embedded_css)
-    self.ui.doc_settings:saveSetting("embedded_fonts", self.embedded_fonts)
-    self.ui.doc_settings:saveSetting("render_dpi", self.render_dpi)
-    self.ui.doc_settings:saveSetting("smooth_scaling", self.smooth_scaling)
-    self.ui.doc_settings:saveSetting("nightmode_images", self.nightmode_images)
 end
 
 function ReaderTypeset:onToggleEmbeddedStyleSheet(toggle)
-    self:toggleEmbeddedStyleSheet(toggle)
+    local text
     if toggle then
-        Notification:notify(_("Enabled embedded styles."))
+        self.configurable.embedded_css = 1
+        text = _("Enabled embedded styles.")
     else
-        Notification:notify(_("Disabled embedded styles."))
+        self.configurable.embedded_css = 0
+        text = _("Disabled embedded styles.")
+        self:setStyleSheet(self.ui.document.default_css)
     end
+    self.ui.document:setEmbeddedStyleSheet(self.configurable.embedded_css)
+    self.ui:handleEvent(Event:new("UpdatePos"))
+    Notification:notify(text)
     return true
 end
 
 function ReaderTypeset:onToggleEmbeddedFonts(toggle)
-    self:toggleEmbeddedFonts(toggle)
+    local text
     if toggle then
-        Notification:notify(_("Enabled embedded fonts."))
+        self.configurable.embedded_fonts = 1
+        text = _("Enabled embedded fonts.")
     else
-        Notification:notify(_("Disabled embedded fonts."))
+        self.configurable.embedded_fonts = 0
+        text = _("Disabled embedded fonts.")
     end
+    self.ui.document:setEmbeddedFonts(self.configurable.embedded_fonts)
+    self.ui:handleEvent(Event:new("UpdatePos"))
+    Notification:notify(text)
     return true
 end
 
 function ReaderTypeset:onToggleImageScaling(toggle)
-    self:toggleImageScaling(toggle)
-    Notification:notify(T( _("Image scaling set to: %1"), optionsutil:getOptionText("ToggleImageScaling", toggle)))
+    self.configurable.smooth_scaling = toggle and 1 or 0
+    self.ui.document:setImageScaling(toggle)
+    self.ui:handleEvent(Event:new("UpdatePos"))
+    local text = T(_("Image scaling set to: %1"), optionsutil:getOptionText("ToggleImageScaling", toggle))
+    Notification:notify(text)
     return true
 end
 
 function ReaderTypeset:onToggleNightmodeImages(toggle)
-    self:toggleNightmodeImages(toggle)
+    self.configurable.nightmode_images = toggle and 1 or 0
+    self.ui.document:setNightmodeImages(toggle)
+    self.ui:handleEvent(Event:new("UpdatePos"))
     return true
 end
 
 function ReaderTypeset:onSetBlockRenderingMode(mode)
     self:setBlockRenderingMode(mode)
-    Notification:notify(T( _("Render mode set to: %1"), optionsutil:getOptionText("SetBlockRenderingMode", mode)))
+    local text = T(_("Render mode set to: %1"), optionsutil:getOptionText("SetBlockRenderingMode", mode))
+    Notification:notify(text)
+    return true
+end
+
+function ReaderTypeset:onSetRenderDPI(dpi)
+    self.configurable.render_dpi = dpi
+    self.ui.document:setRenderDPI(dpi)
+    self.ui:handleEvent(Event:new("UpdatePos"))
+    local text = T(_("Zoom set to: %1"), optionsutil:getOptionText("SetRenderDPI", dpi))
+    Notification:notify(text)
     return true
 end
 
@@ -190,12 +163,6 @@ local OBSOLETED_CSS = {
     "rtf.css",
     "txt.css",
 }
-
-function ReaderTypeset:onSetRenderDPI(dpi)
-    self:setRenderDPI(dpi)
-    Notification:notify(T( _("Zoom set to: %1"), optionsutil:getOptionText("SetRenderDPI", dpi)))
-    return true
-end
 
 function ReaderTypeset:genStyleSheetMenu()
     local getStyleMenuItem = function(text, css_file, separator)
@@ -309,30 +276,6 @@ function ReaderTypeset:setEmbededStyleSheetOnly()
     end
 end
 
-function ReaderTypeset:toggleEmbeddedStyleSheet(toggle)
-    if not toggle then
-        self.embedded_css = false
-        self:setStyleSheet(self.ui.document.default_css)
-        self.ui.document:setEmbeddedStyleSheet(0)
-    else
-        self.embedded_css = true
-        --self:setStyleSheet(self.ui.document.default_css)
-        self.ui.document:setEmbeddedStyleSheet(1)
-    end
-    self.ui:handleEvent(Event:new("UpdatePos"))
-end
-
-function ReaderTypeset:toggleEmbeddedFonts(toggle)
-    if not toggle then
-        self.embedded_fonts = false
-        self.ui.document:setEmbeddedFonts(0)
-    else
-        self.embedded_fonts = true
-        self.ui.document:setEmbeddedFonts(1)
-    end
-    self.ui:handleEvent(Event:new("UpdatePos"))
-end
-
 -- crengine enhanced block rendering feature/flags (see crengine/include/lvrend.h):
 --                                               legacy flat book web
 -- ENHANCED                           0x00000001          x    x   x
@@ -404,39 +347,6 @@ function ReaderTypeset:ensureSanerBlockRenderingFlags(mode)
     self:setBlockRenderingMode(self.block_rendering_mode)
 end
 
-function ReaderTypeset:toggleImageScaling(toggle)
-    if toggle and (toggle == true or toggle == 1) then
-        self.smooth_scaling = true
-        self.ui.document:setImageScaling(true)
-    else
-        self.smooth_scaling = false
-        self.ui.document:setImageScaling(false)
-    end
-    self.ui:handleEvent(Event:new("UpdatePos"))
-end
-
-function ReaderTypeset:toggleNightmodeImages(toggle)
-    if toggle and (toggle == true or toggle == 1) then
-        self.nightmode_images = true
-        self.ui.document:setNightmodeImages(true)
-    else
-        self.nightmode_images = false
-        self.ui.document:setNightmodeImages(false)
-    end
-    self.ui:handleEvent(Event:new("UpdatePos"))
-end
-
-function ReaderTypeset:toggleTxtPreFormatted(toggle)
-    self.ui.document:setTxtPreFormatted(toggle)
-    self.ui:handleEvent(Event:new("UpdatePos"))
-end
-
-function ReaderTypeset:setRenderDPI(dpi)
-    self.render_dpi = dpi
-    self.ui.document:setRenderDPI(dpi)
-    self.ui:handleEvent(Event:new("UpdatePos"))
-end
-
 function ReaderTypeset:addToMainMenu(menu_items)
     -- insert table to main reader menu
     menu_items.set_render_style = {
@@ -447,7 +357,7 @@ end
 
 function ReaderTypeset:makeDefaultStyleSheet(css, text, touchmenu_instance)
     UIManager:show(ConfirmBox:new{
-        text = T( _("Set default style to %1?"), BD.filename(text)),
+        text = T(_("Set default style to %1?"), BD.filename(text)),
         ok_callback = function()
             G_reader_settings:saveSetting("copt_css", css)
             if touchmenu_instance then touchmenu_instance:updateItems() end
@@ -465,7 +375,7 @@ function ReaderTypeset:onSetPageTopMargin(t_margin, when_applied_callback)
     if self.sync_t_b_page_margins then
         self.unscaled_margins[4] = t_margin
         -- Let ConfigDialog know so it can update it on screen and have it saved on quit
-        self.ui.document.configurable.b_page_margin = t_margin
+        self.configurable.b_page_margin = t_margin
     end
     self.ui:handleEvent(Event:new("SetPageMargins", self.unscaled_margins, when_applied_callback))
 end
@@ -475,7 +385,7 @@ function ReaderTypeset:onSetPageBottomMargin(b_margin, when_applied_callback)
     if self.sync_t_b_page_margins then
         self.unscaled_margins[2] = b_margin
         -- Let ConfigDialog know so it can update it on screen and have it saved on quit
-        self.ui.document.configurable.t_page_margin = b_margin
+        self.configurable.t_page_margin = b_margin
     end
     self.ui:handleEvent(Event:new("SetPageMargins", self.unscaled_margins, when_applied_callback))
 end
@@ -486,7 +396,7 @@ function ReaderTypeset:onSetPageTopAndBottomMargin(t_b_margins, when_applied_cal
     if t_margin ~= b_margin then
         -- Set Sync T/B Margins toggle to off, as user explicitly made them differ
         self.sync_t_b_page_margins = false
-        self.ui.document.configurable.sync_t_b_page_margins = 0
+        self.configurable.sync_t_b_page_margins = 0
     end
     self.ui:handleEvent(Event:new("SetPageMargins", self.unscaled_margins, when_applied_callback))
 end
@@ -503,8 +413,8 @@ function ReaderTypeset:onSyncPageTopBottomMargins(toggle, when_applied_callback)
             -- and later scaled, the end result could still be different.
             -- So just take the mean and make them equal.
             local mean_margin = Math.round((self.unscaled_margins[2] + self.unscaled_margins[4]) / 2)
-            self.ui.document.configurable.t_page_margin = mean_margin
-            self.ui.document.configurable.b_page_margin = mean_margin
+            self.configurable.t_page_margin = mean_margin
+            self.configurable.b_page_margin = mean_margin
             self.unscaled_margins = { self.unscaled_margins[1], mean_margin, self.unscaled_margins[3], mean_margin }
             self.ui:handleEvent(Event:new("SetPageMargins", self.unscaled_margins, when_applied_callback))
             when_applied_callback = nil

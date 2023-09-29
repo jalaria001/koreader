@@ -224,13 +224,17 @@ function MenuItem:init()
             text = text,
             face = self.face,
             bold = self.bold,
+            truncate_left = self.truncate_left,
             fgcolor = self.dim and Blitbuffer.COLOR_DARK_GRAY or nil,
         }
         local w = item_name:getWidth()
         if w > available_width then
-            -- We give it a little more room if truncated for better visual
+            local text_max_width_if_ellipsis = available_width
+            -- We give it a little more room if truncated at the right for better visual
             -- feeling (which might make it no more truncated, but well...)
-            local text_max_width_if_ellipsis = available_width + text_mandatory_padding - text_ellipsis_mandatory_padding
+            if not self.truncate_left then
+                text_max_width_if_ellipsis = text_max_width_if_ellipsis + text_mandatory_padding - text_ellipsis_mandatory_padding
+            end
             item_name:setMaxWidth(text_max_width_if_ellipsis)
         else
             if self.with_dots then
@@ -790,8 +794,6 @@ function Menu:init()
         },
         call_hold_input_on_tap = true,
         bordersize = 0,
-        text_font_face = "cfont",
-        text_font_size = 20,
         text_font_bold = false,
     }
     self.page_info = HorizontalGroup:new{
@@ -960,8 +962,8 @@ function Menu:onCloseWidget()
     -- Don't do anything if we're in the process of tearing down FM or RD, or if we don't actually have a live instance of 'em...
     local FileManager = require("apps/filemanager/filemanager")
     local ReaderUI = require("apps/reader/readerui")
-    local reader_ui = ReaderUI:_getRunningInstance()
-    if (FileManager.instance and not FileManager.instance.tearing_down) or (reader_ui and not reader_ui.tearing_down) then
+    if (FileManager.instance and not FileManager.instance.tearing_down)
+            or (ReaderUI.instance and not ReaderUI.instance.tearing_down) then
         UIManager:setDirty(nil, "ui")
     end
 end
@@ -1063,6 +1065,7 @@ function Menu:updateItems(select_number)
                 linesize = self.linesize,
                 single_line = self.single_line,
                 multilines_show_more_text = multilines_show_more_text,
+                truncate_left = self.truncate_left,
                 align_baselines = self.align_baselines,
                 with_dots = self.with_dots,
                 line_color = self.line_color,

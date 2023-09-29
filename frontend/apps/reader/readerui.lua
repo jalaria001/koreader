@@ -318,12 +318,14 @@ function ReaderUI:init()
         })
         -- typeset controller
         self:registerModule("typeset", ReaderTypeset:new{
+            configurable = self.document.configurable,
             dialog = self.dialog,
             view = self.view,
             ui = self
         })
         -- font menu
         self:registerModule("font", ReaderFont:new{
+            configurable = self.document.configurable,
             dialog = self.dialog,
             view = self.view,
             ui = self
@@ -342,6 +344,7 @@ function ReaderUI:init()
         })
         -- rolling controller
         self:registerModule("rolling", ReaderRolling:new{
+            configurable = self.document.configurable,
             pan_rate = pan_rate,
             dialog = self.dialog,
             view = self.view,
@@ -456,7 +459,10 @@ function ReaderUI:init()
     -- Now that document is loaded, store book metadata in settings
     -- (so that filemanager can use it from sideCar file to display
     -- Book information).
-    self.doc_settings:saveSetting("doc_props", self.document:getProps())
+    local props = self.document:getProps()
+    self.doc_settings:saveSetting("doc_props", props)
+    -- And have an extended and customized copy in memory for quick access.
+    self.doc_props = FileManagerBookInfo.extendProps(props, self.document.file)
 
     -- Set "reading" status if there is no status.
     local summary = self.doc_settings:readSetting("summary")
@@ -656,15 +662,8 @@ function ReaderUI:doShowReader(file, provider, seamless)
         document = document,
     }
 
-    local title = reader.document:getProps().title
-
-    if title ~= "" then
-        Screen:setWindowTitle(title)
-    else
-        local _, filename = util.splitFilePathName(file)
-        Screen:setWindowTitle(filename)
-    end
-    Device:notifyBookState(title, document)
+    Screen:setWindowTitle(reader.doc_props.display_title)
+    Device:notifyBookState(reader.doc_props.display_title, document)
 
     -- This is mostly for the few callers that bypass the coroutine shenanigans and call doShowReader directly,
     -- instead of showReader...
@@ -678,13 +677,6 @@ function ReaderUI:doShowReader(file, provider, seamless)
     UIManager:show(reader, seamless and "ui" or "full")
 end
 
--- NOTE: The instance reference used to be stored in a private module variable, hence the getter method.
---       We've since aligned behavior with FileManager, which uses a class member instead,
---       but kept the function to avoid changing existing code.
-function ReaderUI:_getRunningInstance()
-    return ReaderUI.instance
-end
-
 function ReaderUI:unlockDocumentWithPassword(document, try_again)
     logger.dbg("show input password dialog")
     self.password_dialog = InputDialog:new{
@@ -695,7 +687,6 @@ function ReaderUI:unlockDocumentWithPassword(document, try_again)
                 {
                     text = _("Cancel"),
                     id = "close",
-                    enabled = true,
                     callback = function()
                         self:closeDialog()
                         coroutine.resume(self._coroutine)
@@ -703,7 +694,6 @@ function ReaderUI:unlockDocumentWithPassword(document, try_again)
                 },
                 {
                     text = _("OK"),
-                    enabled = true,
                     callback = function()
                         local success = self:onVerifyPassword(document)
                         self:closeDialog()
@@ -767,7 +757,7 @@ function ReaderUI:notifyCloseDocument()
             self:closeDocument()
         else
             UIManager:show(ConfirmBox:new{
-                text = _("Write highlights into this PDF??"),
+                text = _("Write highlights into this PDF?"),
                 ok_text = _("Write"),
                 dismissable = false,
                 ok_callback = function()
@@ -832,6 +822,9 @@ function ReaderUI:dealWithLoadDocumentFailure()
                 coroutine.resume(_coroutine, false)
             end,
         })
+        -- Restore input, so can catch the InfoMessage dismiss and exit
+        Device:setIgnoreInput(false)
+        Input:inhibitInputUntil(0.2)
         coroutine.yield() -- pause till InfoMessage is dismissed
     end
     -- We have to error and exit the coroutine anyway to avoid any segfault
@@ -889,11 +882,7 @@ function ReaderUI:onOpenLastDoc()
 end
 
 function ReaderUI:getCurrentPage()
-    if self.document.info.has_pages then
-        return self.paging.current_page
-    else
-        return self.document:getCurrentPage()
-    end
+    return self.paging and self.paging.current_page or self.document:getCurrentPage()
 end
 
 return ReaderUI

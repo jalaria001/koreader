@@ -14,24 +14,33 @@ local Notification = require("ui/widget/notification")
 local Screen = require("device").screen
 local UIManager = require("ui/uimanager")
 local cre -- Delayed loading
-local T = require("ffi/util").template
+local logger = require("logger")
+local util = require("util")
 local _ = require("gettext")
+local T = require("ffi/util").template
 local C_ = _.pgettext
 local optionsutil = require("ui/data/optionsutil")
 
 local ReaderFont = InputContainer:extend{
     font_face = nil,
-    font_size = nil,
-    line_space_percent = nil,
     font_menu_title = _("Font"),
     face_table = nil,
-    -- default gamma from crengine's lvfntman.cpp
-    gamma_index = nil,
     steps = {0,1,1,1,1,1,2,2,2,3,3,3,4,4,5},
 }
 
+-- Keep a list of the new fonts seen at launch
+local newly_added_fonts = nil -- not yet filled
+
 function ReaderFont:init()
     self:registerKeyEvents()
+    self:setupFaceMenuTable()
+    self.ui.menu:registerToMainMenu(self)
+    -- NOP our own gesture handling
+    self.ges_events = nil
+end
+
+function ReaderFont:setupFaceMenuTable()
+    logger.dbg("building font face menu table")
     -- Build face_table for menu
     self.face_table = {}
     -- Font settings
@@ -62,6 +71,7 @@ function ReaderFont:init()
     -- Font list
     cre = require("document/credocument"):engineInit()
     local face_list = cre.getFontFaces()
+    face_list = self:sortFaceList(face_list)
     for k, v in ipairs(face_list) do
         local font_filename, font_faceindex, is_monospace = cre.getFontFaceFilenameAndFaceIndex(v)
         table.insert(self.face_table, {
@@ -86,6 +96,9 @@ function ReaderFont:init()
                 if v == fallback_font then
                     text = text .. "   �"
                 end
+                if newly_added_fonts[v] then
+                    text = text .. "  \u{EA93}" -- "NEW" in a black square, from nerdfont
+                end
                 return text
             end,
             font_func = function(size)
@@ -97,6 +110,10 @@ function ReaderFont:init()
             end,
             callback = function()
                 self:onSetFont(v)
+                -- We add it to the recently selected list only for tap on the
+                -- menu item (and not when :onSetFont() would be triggered by
+                -- a gesture/profile), which may be convenient for some users.
+                self:addToRecentlySelectedList(v)
             end,
             hold_callback = function(touchmenu_instance)
                 self:makeDefault(v, is_monospace, touchmenu_instance)
@@ -107,13 +124,18 @@ function ReaderFont:init()
             menu_item_id = v,
         })
     end
+    self.face_table.refresh_func = function()
+        self:setupFaceMenuTable()
+        -- This might be used by TouchMenu to refresh its font list menu,
+        -- so return the newly created menu table.
+        return self.face_table
+    end
     self.face_table.open_on_menu_item_id_func = function()
         return self.font_face
     end
-    self.ui.menu:registerToMainMenu(self)
-
-    -- NOP our own gesture handling
-    self.ges_events = nil
+    -- Have TouchMenu show half of the usual nb of items, so we
+    -- have more room to see how the text looks with that font
+    self.face_table.max_per_page = 5
 end
 
 function ReaderFont:onGesture() end
@@ -154,51 +176,15 @@ function ReaderFont:onReadSettings(config)
                          or self.ui.document.header_font
     self.ui.document:setHeaderFont(self.header_font_face)
 
-    self.font_size = config:readSetting("font_size")
-                  or G_reader_settings:readSetting("copt_font_size")
-                  or G_defaults:readSetting("DCREREADER_CONFIG_DEFAULT_FONT_SIZE")
-                  or 22
-    self.ui.document:setFontSize(Screen:scaleBySize(self.font_size))
-
-    self.font_base_weight = config:readSetting("font_base_weight")
-                      or G_reader_settings:readSetting("copt_font_base_weight")
-                      or 0
-    self.ui.document:setFontBaseWeight(self.font_base_weight)
-
-    self.font_hinting = config:readSetting("font_hinting")
-                     or G_reader_settings:readSetting("copt_font_hinting")
-                     or 2 -- auto (default in cre.cpp)
-    self.ui.document:setFontHinting(self.font_hinting)
-
-    self.font_kerning = config:readSetting("font_kerning")
-                     or G_reader_settings:readSetting("copt_font_kerning")
-                     or 3 -- harfbuzz (slower, but needed for proper arabic)
-    self.ui.document:setFontKerning(self.font_kerning)
-
-    self.word_spacing = config:readSetting("word_spacing")
-                     or G_reader_settings:readSetting("copt_word_spacing")
-                     or {95, 75}
-    self.ui.document:setWordSpacing(self.word_spacing)
-
-    self.word_expansion = config:readSetting("word_expansion")
-                       or G_reader_settings:readSetting("copt_word_expansion")
-                       or 0
-    self.ui.document:setWordExpansion(self.word_expansion)
-
-    self.cjk_width_scaling = config:readSetting("cjk_width_scaling")
-                       or G_reader_settings:readSetting("copt_cjk_width_scaling")
-                       or 100
-    self.ui.document:setCJKWidthScaling(self.cjk_width_scaling)
-
-    self.line_space_percent = config:readSetting("line_space_percent")
-                           or G_reader_settings:readSetting("copt_line_spacing")
-                           or G_defaults:readSetting("DCREREADER_CONFIG_LINE_SPACE_PERCENT_MEDIUM")
-    self.ui.document:setInterlineSpacePercent(self.line_space_percent)
-
-    self.gamma_index = config:readSetting("gamma_index")
-                    or G_reader_settings:readSetting("copt_font_gamma")
-                    or 15 -- gamma = 1.0
-    self.ui.document:setGammaIndex(self.gamma_index)
+    self.ui.document:setFontSize(Screen:scaleBySize(self.configurable.font_size))
+    self.ui.document:setFontBaseWeight(self.configurable.font_base_weight)
+    self.ui.document:setFontHinting(self.configurable.font_hinting)
+    self.ui.document:setFontKerning(self.configurable.font_kerning)
+    self.ui.document:setWordSpacing(self.configurable.word_spacing)
+    self.ui.document:setWordExpansion(self.configurable.word_expansion)
+    self.ui.document:setCJKWidthScaling(self.configurable.cjk_width_scaling)
+    self.ui.document:setInterlineSpacePercent(self.configurable.line_spacing)
+    self.ui.document:setGammaIndex(self.configurable.font_gamma)
 
     self.font_family_fonts = config:readSetting("font_family_fonts") or {}
     self:updateFontFamilyFonts()
@@ -244,32 +230,30 @@ end
     UpdatePos event is used to tell ReaderRolling to update pos.
 --]]
 function ReaderFont:onChangeSize(delta)
-    self.font_size = self.font_size + delta
-    self.ui:handleEvent(Event:new("SetFontSize", self.font_size))
+    self:onSetFontSize(self.configurable.font_size + delta)
     return true
 end
 
-function ReaderFont:onSetFontSize(new_size)
-    if new_size > 255 then new_size = 255 end
-    if new_size < 12 then new_size = 12 end
-
-    self.font_size = new_size
-    self.ui.document:setFontSize(Screen:scaleBySize(new_size))
+function ReaderFont:onSetFontSize(size)
+    size = math.max(12, math.min(size, 255))
+    self.configurable.font_size = size
+    self.ui.document:setFontSize(Screen:scaleBySize(size))
     self.ui:handleEvent(Event:new("UpdatePos"))
-    Notification:notify(T(_("Font size set to: %1."), self.font_size))
+    Notification:notify(T(_("Font size set to: %1."), size))
     return true
 end
 
 function ReaderFont:onSetLineSpace(space)
-    self.line_space_percent = math.min(200, math.max(50, space))
-    self.ui.document:setInterlineSpacePercent(self.line_space_percent)
+    space = math.max(50, math.min(space, 200))
+    self.configurable.line_spacing = space
+    self.ui.document:setInterlineSpacePercent(space)
     self.ui:handleEvent(Event:new("UpdatePos"))
-    Notification:notify(T(_("Line spacing set to: %1%."), self.line_space_percent))
+    Notification:notify(T(_("Line spacing set to: %1%."), space))
     return true
 end
 
 function ReaderFont:onSetFontBaseWeight(weight)
-    self.font_base_weight = weight
+    self.configurable.font_base_weight = weight
     self.ui.document:setFontBaseWeight(weight)
     self.ui:handleEvent(Event:new("UpdatePos"))
     Notification:notify(T(_("Font weight set to: %1."), optionsutil:getOptionText("SetFontBaseWeight", weight)))
@@ -277,7 +261,7 @@ function ReaderFont:onSetFontBaseWeight(weight)
 end
 
 function ReaderFont:onSetFontHinting(mode)
-    self.font_hinting = mode
+    self.configurable.font_hinting = mode
     self.ui.document:setFontHinting(mode)
     self.ui:handleEvent(Event:new("UpdatePos"))
     Notification:notify(T(_("Font hinting set to: %1"), optionsutil:getOptionText("SetFontHinting", mode)))
@@ -285,7 +269,7 @@ function ReaderFont:onSetFontHinting(mode)
 end
 
 function ReaderFont:onSetFontKerning(mode)
-    self.font_kerning = mode
+    self.configurable.font_kerning = mode
     self.ui.document:setFontKerning(mode)
     self.ui:handleEvent(Event:new("UpdatePos"))
     Notification:notify(T(_("Font kerning set to: %1"), optionsutil:getOptionText("SetFontKerning", mode)))
@@ -293,7 +277,7 @@ function ReaderFont:onSetFontKerning(mode)
 end
 
 function ReaderFont:onSetWordSpacing(values)
-    self.word_spacing = values
+    self.configurable.word_spacing = values
     self.ui.document:setWordSpacing(values)
     self.ui:handleEvent(Event:new("UpdatePos"))
     Notification:notify(T(_("Word spacing set to: %1%, %2%"), values[1], values[2]))
@@ -301,7 +285,7 @@ function ReaderFont:onSetWordSpacing(values)
 end
 
 function ReaderFont:onSetWordExpansion(value)
-    self.word_expansion = value
+    self.configurable.word_expansion = value
     self.ui.document:setWordExpansion(value)
     self.ui:handleEvent(Event:new("UpdatePos"))
     Notification:notify(T(_("Word expansion set to: %1%."), value))
@@ -309,7 +293,7 @@ function ReaderFont:onSetWordExpansion(value)
 end
 
 function ReaderFont:onSetCJKWidthScaling(value)
-    self.cjk_width_scaling = value
+    self.configurable.cjk_width_scaling = value
     self.ui.document:setCJKWidthScaling(value)
     self.ui:handleEvent(Event:new("UpdatePos"))
     Notification:notify(T(_("CJK width scaling set to: %1%."), value))
@@ -317,8 +301,8 @@ function ReaderFont:onSetCJKWidthScaling(value)
 end
 
 function ReaderFont:onSetFontGamma(gamma)
-    self.gamma_index = gamma
-    self.ui.document:setGammaIndex(self.gamma_index)
+    self.configurable.font_gamma = gamma
+    self.ui.document:setGammaIndex(gamma)
     local gamma_level = self.ui.document:getGammaLevel()
     self.ui:handleEvent(Event:new("RedrawCurrentView"))
     Notification:notify(T(_("Font gamma set to: %1."), gamma_level))
@@ -328,15 +312,6 @@ end
 function ReaderFont:onSaveSettings()
     self.ui.doc_settings:saveSetting("font_face", self.font_face)
     self.ui.doc_settings:saveSetting("header_font_face", self.header_font_face)
-    self.ui.doc_settings:saveSetting("font_size", self.font_size)
-    self.ui.doc_settings:saveSetting("font_base_weight", self.font_base_weight)
-    self.ui.doc_settings:saveSetting("font_hinting", self.font_hinting)
-    self.ui.doc_settings:saveSetting("font_kerning", self.font_kerning)
-    self.ui.doc_settings:saveSetting("word_spacing", self.word_spacing)
-    self.ui.doc_settings:saveSetting("word_expansion", self.word_expansion)
-    self.ui.doc_settings:saveSetting("cjk_width_scaling", self.cjk_width_scaling)
-    self.ui.doc_settings:saveSetting("line_space_percent", self.line_space_percent)
-    self.ui.doc_settings:saveSetting("gamma_index", self.gamma_index)
     self.ui.doc_settings:saveSetting("font_family_fonts", self.font_family_fonts)
 end
 
@@ -393,15 +368,17 @@ function ReaderFont:makeDefault(face, is_monospace, touchmenu_instance)
 end
 
 function ReaderFont:addToMainMenu(menu_items)
-    -- Have TouchMenu show half of the usual nb of items, so we
-    -- have more room to see how the text looks with that font
-    self.face_table.max_per_page = 5
     -- insert table to main reader menu
     menu_items.change_font = {
         text_func = function()
             return T(_("Font: %1"), BD.wrap(self.font_face))
         end,
-        sub_item_table = self.face_table,
+        sub_item_table_func = function()
+            if self.face_table.needs_refresh and self.face_table.refresh_func then
+                self.face_table.refresh_func()
+            end
+            return self.face_table
+        end
     }
 end
 
@@ -723,6 +700,35 @@ function ReaderFont:getFontSettingsTable()
             G_reader_settings:flipNilOrTrue("font_menu_use_font_face")
         end,
         help_text = _([[In the font menu, display each font name with its own font face.]]),
+    })
+
+    table.insert(settings_table, {
+        text = _("Sort fonts by recently selected"),
+        checked_func = function()
+            return G_reader_settings:isTrue("font_menu_sort_by_recently_selected")
+        end,
+        callback = function()
+            G_reader_settings:flipTrue("font_menu_sort_by_recently_selected")
+            self.face_table.needs_refresh = true
+        end,
+        hold_callback = function()
+            UIManager:show(ConfirmBox:new{
+                text = _([[
+The font list menu can show fonts sorted by name or by most recently selected.
+New fonts discovered at KOReader startup will be shown first.
+
+Do you want to clear the history of selected fonts?]]),
+                ok_text = _("Clear"),
+                ok_callback = function()
+                    G_reader_settings:delSetting("cre_fonts_recently_selected")
+                    -- Recreate it now, sorted alphabetically (we may not go visit
+                    -- and refresh the font menu until quit, but we want to be able
+                    -- to notice newly added fonts at next startup).
+                    self:sortFaceList(cre.getFontFaces())
+                    self.face_table.needs_refresh = true
+                end,
+            })
+        end,
         separator = true,
     })
 
@@ -806,6 +812,65 @@ This setting allows scaling all monospace fonts by this percentage so they can f
         end,
     })
     return settings_table
+end
+
+function ReaderFont:addToRecentlySelectedList(face)
+    local idx = util.arrayContains(self.fonts_recently_selected, face)
+    if idx then
+        table.remove(self.fonts_recently_selected, idx)
+    end
+    table.insert(self.fonts_recently_selected, 1, face)
+    if G_reader_settings:isTrue("font_menu_sort_by_recently_selected") then
+        self.face_table.needs_refresh = true
+    end
+end
+
+function ReaderFont:sortFaceList(face_list)
+    self.fonts_recently_selected = G_reader_settings:readSetting("cre_fonts_recently_selected")
+    if not self.fonts_recently_selected then
+        -- Init this list with the alphabetical list we got
+        self.fonts_recently_selected = face_list
+        G_reader_settings:saveSetting("cre_fonts_recently_selected", self.fonts_recently_selected)
+        -- We got no list of previously known fonts, so we can't say which are new.
+        newly_added_fonts = {}
+        return face_list
+    end
+    if not newly_added_fonts then
+        -- First call after launch: check for fonts not yet known
+        newly_added_fonts = {}
+        local seen_fonts = {}
+        for _, face in ipairs(self.fonts_recently_selected) do
+            seen_fonts[face] = false -- was there last time, might no longer be now
+        end
+        for _, face in ipairs(face_list) do
+            if seen_fonts[face] == nil then -- not known
+                newly_added_fonts[face] = true
+                -- Add newly seen fonts at start of the recently set list,
+                -- so the user can see and test them more easily.
+                table.insert(self.fonts_recently_selected, 1, face)
+            end
+            seen_fonts[face] = true
+        end
+        -- Remove no-longer-there fonts from our list
+        util.arrayRemove(self.fonts_recently_selected, function(t, i, j)
+            return seen_fonts[t[i]]
+        end)
+    end
+    if G_reader_settings:isTrue("font_menu_sort_by_recently_selected") then
+        return self.fonts_recently_selected
+    end
+    -- Otherwise, return face_list as we got it, alphabetically (as sorted by crengine),
+    -- but still with newly added fonts first
+    if next(newly_added_fonts) then
+        local move_idx = 1
+        for i=1, #face_list do
+            if newly_added_fonts[face_list[i]] then
+                table.insert(face_list, move_idx, table.remove(face_list, i))
+                move_idx = move_idx + 1
+            end
+        end
+    end
+    return face_list
 end
 
 -- Default sample file

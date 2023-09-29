@@ -98,7 +98,7 @@ local linux_evdev_rep_code_map = {
     [C.REP_PERIOD] = "REP_PERIOD",
 }
 
-local _internal_clipboard_text = nil -- holds the last copied text
+local _internal_clipboard_text = "" -- holds the last copied text
 
 local Input = {
     -- must point to the device implementation when instantiating
@@ -190,13 +190,13 @@ local Input = {
 
     -- simple internal clipboard implementation, can be overidden to use system clipboard
     hasClipboardText = function()
-        return _internal_clipboard_text ~= nil and _internal_clipboard_text ~= ""
+        return _internal_clipboard_text ~= ""
     end,
     getClipboardText = function()
         return _internal_clipboard_text
     end,
     setClipboardText = function(text)
-        _internal_clipboard_text = text
+        _internal_clipboard_text = text or ""
     end,
 }
 
@@ -392,6 +392,20 @@ function Input:adjustABS_SwitchAxesAndMirrorX(ev, max_x)
     end
 end
 
+function Input:adjustABS_SwitchAxesAndMirrorY(ev, max_y)
+    if ev.code == C.ABS_X then
+        ev.code = C.ABS_Y
+        ev.value = max_y - ev.value
+    elseif ev.code == C.ABS_Y then
+        ev.code = C.ABS_X
+    elseif ev.code == C.ABS_MT_POSITION_X then
+        ev.code = C.ABS_MT_POSITION_Y
+        ev.value = max_y - ev.value
+    elseif ev.code == C.ABS_MT_POSITION_Y then
+        ev.code = C.ABS_MT_POSITION_X
+    end
+end
+
 function Input:adjustABS_Translate(ev, by)
     if ev.code == C.ABS_X or ev.code == C.ABS_MT_POSITION_X then
         ev.value = by.x + ev.value
@@ -506,6 +520,15 @@ function Input:resetState()
         self.gesture_detector:resetClockSource()
     end
     self:clearTimeouts()
+
+    -- Drop the slots on our end, too
+    self:newFrame()
+    self.cur_slot = self.main_finger_slot
+    self.ev_slots = {
+        [self.main_finger_slot] = {
+            slot = self.main_finger_slot,
+        },
+    }
 end
 
 function Input:handleKeyBoardEv(ev)

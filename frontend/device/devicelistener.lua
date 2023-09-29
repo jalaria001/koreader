@@ -197,7 +197,9 @@ if Device:hasFrontlight() then
         local notif_cb = function()
             Notification:notify(new_text, notif_source)
         end
-        powerd:toggleFrontlight(notif_cb)
+        if not powerd:toggleFrontlight(notif_cb) then
+            Notification:notify(_("Frontlight unchanged."), notif_source)
+        end
     end
 
     function DeviceListener:onShowFlDialog()
@@ -313,6 +315,17 @@ end
 function DeviceListener:onSwapPageTurnButtons()
     G_reader_settings:flipNilOrFalse("input_invert_page_turn_keys")
     Device:invertButtons()
+end
+
+function DeviceListener:onToggleKeyRepeat(toggle)
+    if toggle == true then
+        G_reader_settings:makeFalse("input_no_key_repeat")
+    elseif toggle == false then
+        G_reader_settings:makeTrue("input_no_key_repeat")
+    else
+        G_reader_settings:flipNilOrFalse("input_no_key_repeat")
+    end
+    Device:toggleKeyRepeat(G_reader_settings:nilOrFalse("input_no_key_repeat"))
 end
 
 function DeviceListener:onRestart()

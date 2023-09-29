@@ -25,6 +25,7 @@ local lfs = require("libs/libkoreader-lfs")
 local logger = require("logger")
 local util = require("util")
 local _ = require("gettext")
+local C_ = _.pgettext
 local Screen = Device.screen
 local T = require("ffi/util").template
 
@@ -151,8 +152,6 @@ function TweakInfoWidget:init()
 
     local button_table = ButtonTable:new{
         width = content:getSize().w,
-        button_font_face = "cfont",
-        button_font_size = 20,
         buttons = buttons,
         zero_sep = true,
         show_parent = self,
@@ -582,7 +581,7 @@ You can enable individual tweaks on this book with a tap, or view more details a
                 end,
                 callback = function()
                     -- enable/disable only for this book
-                    self:onToggleStyleTweak(item.id, item)
+                    self:onToggleStyleTweak(item.id, item, true) -- no notification
                 end,
                 separator = item.separator,
             })
@@ -716,7 +715,8 @@ function ReaderStyleTweak:addToMainMenu(menu_items)
     }
 end
 
-function ReaderStyleTweak:onToggleStyleTweak(tweak_id, item)
+function ReaderStyleTweak:onToggleStyleTweak(tweak_id, item, no_notification)
+    local text
     local enabled, g_enabled = self:isTweakEnabled(tweak_id)
     if enabled then
         if g_enabled then
@@ -726,6 +726,7 @@ function ReaderStyleTweak:onToggleStyleTweak(tweak_id, item)
         else
             self.doc_tweaks[tweak_id] = nil
         end
+        text = T(C_("Style tweak", "Off: %1"), self.tweaks_in_dispatcher[tweak_id])
     else
         local conflicts_with
         if item then
@@ -742,8 +743,14 @@ function ReaderStyleTweak:onToggleStyleTweak(tweak_id, item)
             self:resolveConflictsBeforeEnabling(tweak_id, conflicts_with)
         end
         self.doc_tweaks[tweak_id] = true
+        text = T(C_("Style tweak", "On: %1"), self.tweaks_in_dispatcher[tweak_id])
     end
     self:updateCssText(true) -- apply it immediately
+    if not no_notification then
+        UIManager:show(Notification:new{
+            text = text,
+        })
+    end
 end
 
 function ReaderStyleTweak:onDispatcherRegisterActions()
@@ -911,10 +918,10 @@ function ReaderStyleTweak:editBookTweak(touchmenu_instance)
                 end
             end
         end,
-        -- Set/save view and cursor position callback
+        -- Store/retrieve view and cursor position callback
         view_pos_callback = function(top_line_num, charpos)
-            -- This same callback is called with no argument to get initial position,
-            -- and with arguments to give back final position when closed.
+            -- This same callback is called with no arguments on init to retrieve the stored initial position,
+            -- and with arguments to store the final position on close.
             if top_line_num and charpos then
                 self.book_style_tweak_last_edit_pos = {top_line_num, charpos}
             else
