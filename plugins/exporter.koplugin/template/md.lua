@@ -39,23 +39,23 @@ local function prepareBookContent(book, formatting_options, highlight_formatting
     local content = ""
     local current_chapter = nil
     content = content .. "# " .. book.title .. "\n"
-    local author = book.author or _("N/A")
-    content = content .. "##### " .. author:gsub("\n", ", ") .. "\n\n"
+    content = content .. "##### " .. book.author:gsub("\n", ", ") .. "\n\n"
     for _, note in ipairs(book) do
         local entry = note[1]
         if entry.chapter ~= current_chapter then
             current_chapter = entry.chapter
+            content = content .. "\n---\n"
             content = content .. "## " .. current_chapter .. "\n"
         end
         content = content .. "### Page " .. entry.page .. " @ " .. os.date("%d %B %Y %I:%M:%S %p", entry.time) .. "\n"
+        if entry.note then
+            content = content .. "- " .. entry.note .. "\n\n"
+        end
         if highlight_formatting then
             content = content .. string.format(formatters[formatting_options[entry.drawer]].formatter, entry.text) .."\n"
         else
             content = content .. entry.text .. "\n"
-        end
-        if entry.note then
-            content = content .. "\n---\n" .. entry.note .. "\n"
-        end
+        end        
         content = content .. "\n"
     end
     return content
